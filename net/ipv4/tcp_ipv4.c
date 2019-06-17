@@ -942,7 +942,45 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 	if (!dst && (dst = inet_csk_route_req(sk, &fl4, req)) == NULL)
 		return -1;
 
-	skb = tcp_make_synack(sk, dst, req, foc, synack_type);
+	if (!req->synack) {
+		skb = tcp_make_synack(sk, dst, req, foc, synack_type);
+	} else {
+		/* fast settings for synack packet */
+		u64 now;
+		struct tcphdr *th;
+		struct skb_shared_info *shinfo;
+		struct tcp_out_options opts;
+
+		skb = req->synack;
+		shinfo = skb_shinfo(skb);
+
+		/* TODO : need to cache tcp option field */
+		memset(&opts, 0, sizeof(opts));
+
+		skb->len = tcp_synack_options(sk, req, req->mss_cache, skb, &opts, NULL,
+						foc) + sizeof(*th);
+		skb->data = skb->head + skb->transport_header;
+		/* Reset skb->next, skb->prev fields */
+		memset(&skb->rbnode, 0, sizeof(struct rb_node));
+		skb_dst_set(skb, dst);
+		th = tcp_hdr(skb);
+
+		now = tcp_clock_ns();
+		skb->skb_mstamp_ns = now;
+		if (!tcp_rsk(req)->snt_synack)
+			tcp_rsk(req)->snt_synack = tcp_skb_timestamp_us(skb);
+
+		skb_set_hash(skb, tcp_rsk(req)->txhash, PKT_HASH_TYPE_L4);
+
+		/* Turn off CONFIG_TCP_MD5SIG in kernel config */
+		th->dest = ireq->ir_rmt_port;
+		th->ack_seq = htonl(tcp_rsk(req)->rcv_nxt);
+		tcp_options_write((__be32 *)(th + 1), NULL, &opts);
+
+		/* Do something not to release synack packet */
+		refcount_set(&skb->users, 2);
+		atomic_set(&shinfo->dataref, 2);
+	}
 
 	if (skb) {
 		__tcp_v4_send_check(skb, ireq->ir_loc_addr, ireq->ir_rmt_addr);

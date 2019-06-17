@@ -351,6 +351,92 @@ void tcp_twsk_destructor(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(tcp_twsk_destructor);
 
+/* Need to implement. Reference inet_reqsk_alloc and tcp_conn_request
+ * TODO @@ Need to fix it to return error code when something fails @@
+ */
+void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
+		struct dst_entry *dst, struct sk_buff *skb,
+		const struct tcp_request_sock_ops *af_ops)
+{
+	struct inet_request_sock *ireq = inet_rsk(req);
+	struct tcp_fastopen_cookie foc = { .len = -1 };
+	struct tcp_options_received tmp_opt;
+	struct sock *fastopen_sk = NULL;
+	struct net *net = sock_net(sk);
+
+	/* reqsk_alloc */
+	sk_node_init(&req_to_sk(req)->sk_node);
+	req->num_timeout = 0;
+	req->num_retrans = 0;
+
+	/* inet_reqsk_alloc */
+	ireq->ireq_state = TCP_NEW_SYN_RECV;
+	
+	/* tcp_conn_request */
+	tcp_clear_options(&tmp_opt);
+	tcp_parse_options(sock_net(sk), skb, &tmp_opt, 0, &foc);
+	tmp_opt.tstamp_ok = tmp_opt.saw_tstamp;
+
+	/* tcp_openreq_init */
+	tcp_rsk(req)->rcv_isn = TCP_SKB_CB(skb)->seq;
+	tcp_rsk(req)->rcv_nxt = TCP_SKB_CB(skb)->seq + 1;
+	tcp_rsk(req)->snt_synack = tcp_clock_us();
+	tcp_rsk(req)->last_oow_ack_time = 0;
+	req->ts_recent = tmp_opt.saw_tstamp ? tmp_opt.rcv_tsval : 0;
+
+	/* It is just copied. Remove if needed. */
+	ireq->snd_wscale = tmp_opt.snd_wscale;
+        ireq->wscale_ok = tmp_opt.wscale_ok;
+        ireq->acked = 0;
+	ireq->ir_rmt_port = tcp_hdr(skb)->source;
+
+	/* Skip tcp_ecn_create_request() for the speed up.
+	 * Actually, I think it does not need because it uses cacahed sock.
+	 */
+
+	/* Also skip all the cookie related logics.
+	 * Need to double check cookie logics.
+	 */
+	atomic_inc_not_zero(&dst->__refcnt);
+
+	/* tcp_openreq_init_rwin 
+	 * I think that rwin is not changed using request_sock.
+	 * So, can I reuse it?
+	 */
+
+	/* When and where would it be dropped? */
+	sk_rx_queue_set(req_to_sk(req), skb);
+	tcp_rsk(req)->txhash = net_tx_rndhash();
+
+	/* check fastopen without considering syn cookies */
+	/* tcp_reqsk_record_syn in tcp_input.c */
+	fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
+
+	/* final stage */
+	if (fastopen_sk) {
+		af_ops->send_synack(fastopen_sk, dst, NULL, req,
+				    &foc, TCP_SYNACK_FASTOPEN);
+		/* Add the child socket directly into the accept queue */
+		if (!inet_csk_reqsk_queue_add(sk, req, fastopen_sk)) {
+			reqsk_fastopen_remove(fastopen_sk, req, false);
+			bh_unlock_sock(fastopen_sk);
+			sock_put(fastopen_sk);
+			reqsk_put(req);
+			pr_err("fastopen in reqsk caching fails\n");
+			return;
+		}
+		sk->sk_data_ready(sk);
+		bh_unlock_sock(fastopen_sk);
+		sock_put(fastopen_sk);
+	} else {
+		tcp_rsk(req)->tfo_listener = false;
+		inet_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
+		af_ops->send_synack(sk, dst, NULL, req, &foc, TCP_SYNACK_NORMAL);
+	}
+
+	return;
+}
+
 /* Warning : This function is called without sk_listener being locked.
  * Be sure to read socket fields once, as their value could change under us.
  */

@@ -11,6 +11,7 @@
  *		2 of the License, or (at your option) any later version.
  */
 
+#include <linux/types.h>
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/slab.h>
@@ -19,6 +20,8 @@
 #include <linux/vmalloc.h>
 
 #include <net/request_sock.h>
+
+#include <net/tcp.h>
 
 /*
  * Maximum number of SYN_RECV sockets in queue per LISTEN socket.

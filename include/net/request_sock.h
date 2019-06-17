@@ -54,6 +54,7 @@ struct request_sock {
 #define rsk_listener			__req_common.skc_listener
 #define rsk_window_clamp		__req_common.skc_window_clamp
 #define rsk_rcv_wnd			__req_common.skc_rcv_wnd
+#define rsk_flags			__req_common.skc_flags
 
 	struct request_sock		*dl_next;
 	u16				mss;
@@ -64,10 +65,44 @@ struct request_sock {
 	struct timer_list		rsk_timer;
 	const struct request_sock_ops	*rsk_ops;
 	struct sock			*sk;
+	struct dst_entry		*dst_cache;
 	u32				*saved_syn;
 	u32				secid;
 	u32				peer_secid;
+	unsigned long			cache_flag;
+	struct hlist_node         	cached_list;
+	struct sk_buff			*synack;
+	int				mss_cache;
 };
+
+enum rsk_cache_flag {
+	RSK_CACHED,
+	RSK_INUSE,
+};
+
+static inline bool rsk_test_and_set_flag(struct request_sock *rsk,
+					 enum rsk_cache_flag flag)
+{
+	return test_and_set_bit(flag, &rsk->cache_flag);
+}
+
+static inline void rsk_set_flag(struct request_sock *rsk,
+				enum rsk_cache_flag flag)
+{
+	__set_bit(flag, &rsk->cache_flag);
+}
+
+static inline void rsk_reset_flag(struct request_sock *rsk,
+				  enum rsk_cache_flag flag)
+{
+	__clear_bit(flag, &rsk->cache_flag);
+}
+
+static inline bool rsk_flag(const struct request_sock *rsk,
+			    enum rsk_cache_flag flag)
+{
+	return test_bit(flag, &rsk->cache_flag);
+}
 
 static inline struct request_sock *inet_reqsk(const struct sock *sk)
 {
@@ -102,6 +137,8 @@ reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener,
 	sk_tx_queue_clear(req_to_sk(req));
 	req->saved_syn = NULL;
 	refcount_set(&req->rsk_refcnt, 0);
+	INIT_HLIST_NODE(&req->cached_list);
+	req->synack = NULL;
 
 	return req;
 }
@@ -109,6 +146,12 @@ reqsk_alloc(const struct request_sock_ops *ops, struct sock *sk_listener,
 static inline void reqsk_free(struct request_sock *req)
 {
 	WARN_ON_ONCE(refcount_read(&req->rsk_refcnt) != 0);
+
+	if (rsk_flag(req, RSK_CACHED)) {
+		rsk_reset_flag(req, RSK_INUSE);
+		refcount_set(&req->rsk_refcnt, 1);
+		return;
+	}
 
 	req->rsk_ops->destructor(req);
 	if (req->rsk_listener)
@@ -119,8 +162,15 @@ static inline void reqsk_free(struct request_sock *req)
 
 static inline void reqsk_put(struct request_sock *req)
 {
-	if (refcount_dec_and_test(&req->rsk_refcnt))
+	if (refcount_dec_and_test(&req->rsk_refcnt)) {
+		if (rsk_flag(req, RSK_CACHED)) {
+			rsk_reset_flag(req, RSK_INUSE);
+			refcount_set(&req->rsk_refcnt, 1);
+			return;
+		}
+
 		reqsk_free(req);
+	}
 }
 
 /*

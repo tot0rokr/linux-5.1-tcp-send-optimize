@@ -623,8 +623,31 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 		return pktsize;
 }
 
+/* Hash table for sock, request_sock */
+#define TCP_SOCK_HASH_SIZE 256
+
+#define TCP_RSK_MATCH(__rsk, __dip, __sip, __dport) 	\
+	((req_to_sk(__rsk)->sk_rcv_saddr == (__dip)) &&	\
+	(req_to_sk(__rsk)->sk_daddr == (__sip))      &&	\
+	(inet_rsk(__rsk)->ir_num == (__dport)))
+
+/* If you need lock for bucket list, Add it and should init at boot time */
+struct tcp_reqsk_hashbucket {
+	unsigned int		count;
+	struct hlist_head	head;
+};
+
+struct tcp_sock_hashinfo {
+	unsigned int num_entry;
+	struct tcp_reqsk_hashbucket shash[TCP_SOCK_HASH_SIZE];
+};
+
 /* tcp.c */
 void tcp_get_info(struct sock *, struct tcp_info *);
+struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
+		struct dst_entry **dst, const __be32 dip, const __be32 sip,
+		const __be16 dport);
+bool tcp_cache_reqsk(struct request_sock *req);
 
 /* Read 'sendfile()'-style from a TCP socket */
 int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
@@ -1379,6 +1402,10 @@ static inline int tcp_full_space(const struct sock *sk)
 	return tcp_win_from_space(sk, sk->sk_rcvbuf);
 }
 
+void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
+                struct dst_entry *dst, struct sk_buff *skb,
+                const struct tcp_request_sock_ops *af_ops);
+
 extern void tcp_openreq_init_rwin(struct request_sock *req,
 				  const struct sock *sk_listener,
 				  const struct dst_entry *dst);
@@ -1638,6 +1665,27 @@ void tcp_fastopen_active_disable(struct sock *sk);
 bool tcp_fastopen_active_should_disable(struct sock *sk);
 void tcp_fastopen_active_disable_ofo_check(struct sock *sk);
 void tcp_fastopen_active_detect_blackhole(struct sock *sk, bool expired);
+
+/* TCP out options */
+struct tcp_out_options {
+	u16 options;		/* bit field of OPTION_* */
+	u16 mss;		/* 0 to disable */
+	u8 ws;			/* window scale, 0 to disable */
+	u8 num_sack_blocks;	/* number of SACK blocks to include */
+	u8 hash_size;		/* bytes in hash_location */
+	__u8 *hash_location;	/* temporary pointer, overloaded */
+	__u32 tsval, tsecr;	/* need to include OPTION_TS */
+	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
+};
+
+void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
+			      struct tcp_out_options *opts);
+unsigned int tcp_synack_options(const struct sock *sk,
+				       struct request_sock *req,
+				       unsigned int mss, struct sk_buff *skb,
+				       struct tcp_out_options *opts,
+				       const struct tcp_md5sig_key *md5,
+				       struct tcp_fastopen_cookie *foc);
 
 /* Latencies incurred by various limits for a sender. They are
  * chronograph-like stats that are mutually exclusive.

@@ -430,17 +430,6 @@ static void smc_options_write(__be32 *ptr, u16 *options)
 #endif
 }
 
-struct tcp_out_options {
-	u16 options;		/* bit field of OPTION_* */
-	u16 mss;		/* 0 to disable */
-	u8 ws;			/* window scale, 0 to disable */
-	u8 num_sack_blocks;	/* number of SACK blocks to include */
-	u8 hash_size;		/* bytes in hash_location */
-	__u8 *hash_location;	/* temporary pointer, overloaded */
-	__u32 tsval, tsecr;	/* need to include OPTION_TS */
-	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
-};
-
 /* Write previously computed TCP options to the packet.
  *
  * Beware: Something in the Internet is very sensitive to the ordering of
@@ -454,7 +443,7 @@ struct tcp_out_options {
  * At least SACK_PERM as the first option is known to lead to a disaster
  * (but it may well be that other scenarios fail similarly).
  */
-static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
+void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			      struct tcp_out_options *opts)
 {
 	u16 options = opts->options;	/* mungable copy */
@@ -657,7 +646,7 @@ static unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
 }
 
 /* Set up TCP options for SYN-ACKs. */
-static unsigned int tcp_synack_options(const struct sock *sk,
+unsigned int tcp_synack_options(const struct sock *sk,
 				       struct request_sock *req,
 				       unsigned int mss, struct sk_buff *skb,
 				       struct tcp_out_options *opts,
@@ -3296,6 +3285,17 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 
 	/* Do not fool tcpdump (if any), clean our debris */
 	skb->tstamp = 0;
+
+	if (rsk_flag(req, RSK_CACHED)) {
+		struct skb_shared_info *shinfo = skb_shinfo(skb);
+
+		req->synack = skb;
+		req->mss_cache = mss;
+		refcount_set(&skb->users, 2);
+		atomic_set(&shinfo->dataref, 2);
+		reqsk_put(req);
+	}
+
 	return skb;
 }
 EXPORT_SYMBOL(tcp_make_synack);

@@ -278,6 +278,7 @@
 #include <net/xfrm.h>
 #include <net/ip.h>
 #include <net/sock.h>
+#include <net/request_sock.h>
 
 #include <linux/uaccess.h>
 #include <asm/ioctls.h>
@@ -311,6 +312,13 @@ struct tcp_splice_state {
 	size_t len;
 	unsigned int flags;
 };
+
+/* Per-cpu hash table for sock, request_sock
+ * maybe it doesn't need to be exported to other layer
+ * This hash tables will be used only by TCP layer
+ */
+/* Does it need to be initialized?? for hlist_head?? */
+DEFINE_PER_CPU(struct tcp_sock_hashinfo, tcp_sk_hashinfo);
 
 /*
  * Pressure flag: try to collapse.
@@ -3855,6 +3863,136 @@ int tcp_abort(struct sock *sk, int err)
 }
 EXPORT_SYMBOL_GPL(tcp_abort);
 
+static u32 tcp_sock_hashfn(const __be32 dip, const __be32 sip, const __be16 dport)
+{
+	static u32 hash_secret __read_mostly;
+
+	net_get_random_once(&hash_secret, sizeof(hash_secret));
+
+	return jhash_3words((__force __u32)dip, (__force __u32)sip,
+				(__force __u32)dport, hash_secret);
+}
+
+/* This function returns either of sock or request_sock.
+ * Before the user uses it, cast the pointer to a intended type
+ */
+struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
+		struct dst_entry **dst, const __be32 dip, const __be32 sip,
+		const __be16 dport)
+{
+	struct request_sock *cur;
+	unsigned int hash = tcp_sock_hashfn(dip, sip, dport);
+	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+	__u16 port = ntohs(dport);
+
+	/* There is no cached request_sock */
+	if (!head->head.first)
+		return NULL;
+
+	/* now iterate the bucket list */
+	preempt_disable();
+	hlist_for_each_entry(cur, &head->head, cached_list) {
+		if (TCP_RSK_MATCH(cur, dip, sip, port)) {
+			if (!rsk_flag(cur, RSK_INUSE)) {
+				rsk_set_flag(cur, RSK_INUSE);
+				if (!(*dst = cur->dst_cache)) {
+					pr_err("tcp_sock error: can't find dst in sock\n");
+					rsk_reset_flag(cur, RSK_INUSE);
+					preempt_enable();
+
+					return NULL;
+				}
+				preempt_enable();
+
+				return cur;
+			}
+		}
+	}
+	preempt_enable();
+
+	return NULL;
+}
+
+static int tcp_rsk_insert_bucket(struct tcp_sock_hashinfo *hashinfo,
+				   struct request_sock *req)
+{
+	__be32 dip = req_to_sk(req)->sk_rcv_saddr;
+	__be32 sip = req_to_sk(req)->sk_daddr;
+	__be16 dport = htons(inet_rsk(req)->ir_num);
+	unsigned int hash = tcp_sock_hashfn(dip, sip, dport);
+	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+
+	hlist_add_head(&req->cached_list, &head->head);
+	head->count++;
+	hashinfo->num_entry++;
+
+	return 0;
+}
+
+unsigned int targets[15] = {2744689325, /* 163.152.162.173 */
+			    2744689327, /* 163.152.162.175 */
+			    2744652863, /* 163.152.20.63 */
+			    2744652865, /* 163.152.20.65 */
+			    3232266980, /* 192.168.122.228 */
+			    3232266851, /* 192.168.122.99 */
+			    3232266841, /* 192.168.122.89 */
+			    3232235522, /* 192.168.0.2 */
+			    3232235523, /* 192.168.0.3 */
+			    2610666242, /* 155.155.155.2 */
+			    2610666243, /* 155.155.155.3 */
+			    0, };
+
+static bool tcp_check_cache_reqsk(struct request_sock *req)
+{
+	/* Here you decide whether to cache request_sock. */
+
+	/* TODO - implement the caching policy */
+
+	/* tmep version */
+	__be32 sip = req_to_sk(req)->sk_daddr;
+	int i;
+
+	for (i = 0; i < 15; i++) {
+		if ((unsigned int)ntohl(sip) == targets[i])
+			return true;
+	}
+
+	return false;
+}
+
+bool tcp_cache_reqsk(struct request_sock *req)
+{
+	struct tcp_sock_hashinfo *hashinfo;
+	struct dst_entry *dst = req->dst_cache;
+	int cpu = smp_processor_id();
+	int ret;
+
+	hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
+
+	if (tcp_check_cache_reqsk(req)) {
+		rsk_set_flag(req, RSK_INUSE);
+		rsk_set_flag(req, RSK_CACHED);
+		wmb();
+
+		preempt_disable();
+		ret = tcp_rsk_insert_bucket(hashinfo, req);
+		preempt_enable();
+
+		if (ret < 0)
+			goto error;
+
+		atomic_inc_not_zero(&dst->__refcnt);
+		return true;
+	}
+
+error:
+	return false;
+}
+
 extern struct tcp_congestion_ops tcp_reno;
 
 static __initdata unsigned long thash_entries;
@@ -3888,6 +4026,7 @@ void __init tcp_init(void)
 	int max_rshare, max_wshare, cnt;
 	unsigned long limit;
 	unsigned int i;
+	int cpu;
 
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) >
 		     FIELD_SIZEOF(struct sk_buff, cb));
@@ -3937,6 +4076,14 @@ void __init tcp_init(void)
 	for (i = 0; i < tcp_hashinfo.bhash_size; i++) {
 		spin_lock_init(&tcp_hashinfo.bhash[i].lock);
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
+	}
+
+	for_each_online_cpu(cpu) {
+		struct tcp_sock_hashinfo *hashinfo;
+
+		hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
+		for (i = 0; i < TCP_SOCK_HASH_SIZE; i++)
+			INIT_HLIST_HEAD(&hashinfo->shash[i].head);
 	}
 
 

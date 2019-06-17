@@ -131,6 +131,8 @@ void clean_acked_data_disable(struct inet_connection_sock *icsk)
 EXPORT_SYMBOL_GPL(clean_acked_data_disable);
 #endif
 
+extern struct tcp_sock_hashinfo tcp_sk_hashinfo;
+
 static void tcp_gro_dev_warn(struct sock *sk, const struct sk_buff *skb,
 			     unsigned int len)
 {
@@ -6399,8 +6401,11 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	struct sock *fastopen_sk = NULL;
 	struct request_sock *req;
 	bool want_cookie = false;
-	struct dst_entry *dst;
+	struct dst_entry *dst = NULL;
 	struct flowi fl;
+	const struct iphdr *iph;
+	const struct tcphdr *th;
+	int cpu = smp_processor_id();
 
 	/* TW buckets are converted to open requests without
 	 * limitations, they conserve resources and peer is
@@ -6416,6 +6421,17 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	if (sk_acceptq_is_full(sk)) {
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
 		goto drop;
+	}
+
+	/* Check IP address and port number of skb for request_sock cache */
+	iph = ip_hdr(skb);
+	th = (const struct tcphdr *)skb->data;
+
+	/* Find request_sock in hash table */
+	if ((req = tcp_rsk_lookup(&per_cpu(tcp_sk_hashinfo, cpu), &dst,
+				  iph->daddr, iph->saddr, th->dest))) {
+		tcp_fastset_reqsk(sk, req, dst, skb, af_ops);
+		goto done;
 	}
 
 	req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);
@@ -6456,6 +6472,9 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	if (!dst)
 		goto drop_and_free;
 
+	/* Should I increase ref count of dst to maintain it be not freed? */
+	req->dst_cache = dst;
+
 	if (!want_cookie && !isn) {
 		/* Kill the following clause, if you dislike this way. */
 		if (!net->ipv4.sysctl_tcp_syncookies &&
@@ -6494,6 +6513,11 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		tcp_reqsk_record_syn(sk, req, skb);
 		fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
 	}
+
+	/* cache request_sock in here */
+	if (tcp_cache_reqsk(req))
+		pr_info("cache request_sock on #%d cpu\n", cpu);
+
 	if (fastopen_sk) {
 		af_ops->send_synack(fastopen_sk, dst, &fl, req,
 				    &foc, TCP_SYNACK_FASTOPEN);
@@ -6521,6 +6545,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			return 0;
 		}
 	}
+done:
 	reqsk_put(req);
 	return 0;
 
