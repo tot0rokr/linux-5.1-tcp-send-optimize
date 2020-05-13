@@ -899,6 +899,8 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
 	return NULL;
 }
 
+/* tot0ro>> 새로 구한 gso size가 이전에 구한 gso size보다 작거나 mss만큼 크면
+ * 갱신 */
 static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 				       int large_allowed)
 {
@@ -910,6 +912,9 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 
 	/* Note : tcp_tso_autosize() will eventually split this later */
 	new_size_goal = sk->sk_gso_max_size - 1 - MAX_TCP_HEADER;
+
+	/* tot0ro>> new_size_goal이 최대 window size의 절반 보다 크면
+	 * window size의 절반으로 cut */
 	new_size_goal = tcp_bound_to_half_wnd(tp, new_size_goal);
 
 	/* We try hard to avoid divides here */
@@ -924,6 +929,8 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	return max(size_goal, mss_now);
 }
 
+/* tot0ro>> mss 크기와 한skb가 가질 수 있는 최대 payload의 크기(size_goal)를
+ * 구함. */
 static int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 {
 	int mss_now;
@@ -1184,6 +1191,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	struct sk_buff *skb;
 	struct sockcm_cookie sockc;
 	int flags, err, copied = 0;
+	/* tot0ro>> size_goal: 한 packet에 담을 수 있는 payload의 최대 크기 */
 	int mss_now = 0, size_goal, copied_syn = 0;
 	bool process_backlog = false;
 	bool zc = false;
@@ -1270,6 +1278,8 @@ restart:
 		if (skb)
 			copy = size_goal - skb->len;
 
+		/* tot0ro>> 처음 생성된 skb이거나 가장 최근에 write queue에 들어간
+		 * skb의 payload가 size_goal을 초과한다면 새 skb를 생성 */
 		if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
 			bool first_skb;
 			int linear;
@@ -1282,7 +1292,13 @@ new_segment:
 				process_backlog = false;
 				goto restart;
 			}
+
+			/* tot0ro>> retransmission queue와 write queue가
+			 * 비어있으면 first skb */
 			first_skb = tcp_rtx_and_write_queues_empty(sk);
+
+			/* tot0ro>> zero copy가 아니고, first skb이면 skb->data에
+			 * payload를 담음. 아니면, frag page 사용(뒤에 나옴) */
 			linear = select_size(first_skb, zc);
 			skb = sk_stream_alloc_skb(sk, linear, sk->sk_allocation,
 						  first_skb);
