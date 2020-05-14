@@ -2353,12 +2353,14 @@ bool skb_page_frag_refill(unsigned int sz, struct page_frag *pfrag, gfp_t gfp)
 					  SKB_FRAG_PAGE_ORDER);
 		if (likely(pfrag->page)) {
 			pfrag->size = PAGE_SIZE << SKB_FRAG_PAGE_ORDER;
+			profile_tcp_count_inc(TCP_COUNT_PAGE_FRAG_NEW_PAGE_MANY, smp_processor_id());
 			return true;
 		}
 	}
 	pfrag->page = alloc_page(gfp);
 	if (likely(pfrag->page)) {
 		pfrag->size = PAGE_SIZE;
+		profile_tcp_count_inc(TCP_COUNT_PAGE_FRAG_NEW_PAGE_ONE, smp_processor_id());
 		return true;
 	}
 	return false;

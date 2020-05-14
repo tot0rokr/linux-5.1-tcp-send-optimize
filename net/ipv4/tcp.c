@@ -283,6 +283,82 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
+#ifdef CONFIG_PROFILE_TCP
+/* alreadt implemented in include/net/tcp.h
+enum tcp_counting_e {
+0	TCP_COUNT_SEND = 0,
+1	TCP_COUNT_ITER,
+2	TCP_COUNT_FIRST_SKB,
+3	TCP_COUNT_ALLOC_SKB,
+4	TCP_COUNT_PAYLOAD_IN_HEAD,
+5	TCP_COUNT_PAYLOAD_IN_PAGE_FRAG,
+6	TCP_COUNT_PAGE_FRAG_NEW_PAGE_ONE,
+7	TCP_COUNT_PAGE_FRAG_NEW_PAGE_MANY,
+8	TCP_COUNT_MERGE_PAGE_FRAG,
+9	TCP_COUNT_FRAGMENT_PAGE_FRAG,
+10	TCP_COUNT_PAGE_FRAG_OVERFLOW,
+11	TCP_COUNT_NR
+};
+*/
+DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR], tcp_profile_counting);
+struct timer_list watch_tcp_profile_counting;
+
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e type, int cpu)
+{
+	unsigned long *counter = &per_cpu(tcp_profile_counting[type], cpu);
+	return (*counter)++;
+}
+
+static void watch_lookup_count_fn(struct timer_list *t)
+{
+	int cpu;
+	unsigned long sum[TCP_COUNT_NR] = {0};
+	char sum_str[500] = "";
+	int i;
+
+	printk("            SEND      , ITERATION , FIRST_SKB , ALLOC_SKB , "
+			"IN_HEAD   , IN_FRAG   , NEW_ONE   , NEW_MANY  , MERGE     , "
+			"FRAGMENT  , OVERFLOW  ");
+	for_each_online_cpu(cpu) {
+		char str[500] = "";
+		for (i = 0; i < TCP_COUNT_NR; i++) {
+			unsigned long count = per_cpu(tcp_profile_counting[i], cpu);
+			sprintf(str, "%s, %-10ld", str, count);
+			sum[i] += count;
+		}
+		printk("core(%2d): %s", cpu, str);
+	}
+	for (i = 0; i < TCP_COUNT_NR; i++) {
+		sprintf(sum_str, "%s, %-10ld", sum_str, sum[i]);
+	}
+	printk("total   : %s\n", sum_str);
+	mod_timer(t, jiffies + msecs_to_jiffies(2000));
+}
+
+static void tcp_profile_counter_init(void)
+{
+	int cpu;
+	printk("profile counter init");
+
+	for_each_online_cpu(cpu) {
+		int i;
+		for (i = 0; i < TCP_COUNT_NR; i++) {
+			unsigned long *count = &per_cpu(tcp_profile_counting[i], cpu);
+			*count = 0;
+		}
+	}
+
+	timer_setup(&watch_tcp_profile_counting, watch_lookup_count_fn, 0);
+	watch_tcp_profile_counting.expires = jiffies + msecs_to_jiffies(2000);
+	add_timer(&watch_tcp_profile_counting);
+	printk("profile timer  init");
+}
+
+#else
+static void tcp_profile_counter_init(void) {}
+#endif
+
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -1117,8 +1193,10 @@ EXPORT_SYMBOL(tcp_sendpage);
  */
 static int linear_payload_sz(bool first_skb)
 {
-	if (first_skb)
+	if (first_skb) {
+		profile_tcp_count_inc(TCP_COUNT_FIRST_SKB, smp_processor_id());
 		return SKB_WITH_OVERHEAD(2048 - MAX_TCP_HEADER);
+	}
 	return 0;
 }
 
@@ -1267,12 +1345,15 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 restart:
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
 
+	profile_tcp_count_inc(TCP_COUNT_SEND, smp_processor_id());
+
 	err = -EPIPE;
 	if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
 		goto do_error;
 
 	while (msg_data_left(msg)) {
 		int copy = 0;
+		profile_tcp_count_inc(TCP_COUNT_ITER, smp_processor_id());
 
 		skb = tcp_write_queue_tail(sk);
 		if (skb)
@@ -1305,6 +1386,8 @@ new_segment:
 			if (!skb)
 				goto wait_for_memory;
 
+			profile_tcp_count_inc(TCP_COUNT_ALLOC_SKB, smp_processor_id());
+
 			process_backlog = true;
 			skb->ip_summed = CHECKSUM_PARTIAL;
 
@@ -1328,12 +1411,17 @@ new_segment:
 			/* We have some space in skb head. Superb! */
 			copy = min_t(int, copy, skb_availroom(skb));
 			err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
+
+			profile_tcp_count_inc(TCP_COUNT_PAYLOAD_IN_HEAD, smp_processor_id());
+
 			if (err)
 				goto do_fault;
 		} else if (!zc) {
 			bool merge = true;
 			int i = skb_shinfo(skb)->nr_frags;
 			struct page_frag *pfrag = sk_page_frag(sk);
+
+			profile_tcp_count_inc(TCP_COUNT_PAYLOAD_IN_PAGE_FRAG, smp_processor_id());
 
 			if (!sk_page_frag_refill(sk, pfrag))
 				goto wait_for_memory;
@@ -1342,6 +1430,7 @@ new_segment:
 					      pfrag->offset)) {
 				if (i >= sysctl_max_skb_frags) {
 					tcp_mark_push(tp, skb);
+					profile_tcp_count_inc(TCP_COUNT_PAGE_FRAG_OVERFLOW, smp_processor_id());
 					goto new_segment;
 				}
 				merge = false;
@@ -1362,10 +1451,12 @@ new_segment:
 			/* Update the skb. */
 			if (merge) {
 				skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
+				profile_tcp_count_inc(TCP_COUNT_MERGE_PAGE_FRAG, smp_processor_id());
 			} else {
 				skb_fill_page_desc(skb, i, pfrag->page,
 						   pfrag->offset, copy);
 				page_ref_inc(pfrag->page);
+				profile_tcp_count_inc(TCP_COUNT_FRAGMENT_PAGE_FRAG, smp_processor_id());
 			}
 			pfrag->offset += copy;
 		} else {
@@ -3955,6 +4046,7 @@ void __init tcp_init(void)
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
 
+	tcp_profile_counter_init();
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;

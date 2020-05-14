@@ -48,6 +48,28 @@
 #include <linux/memcontrol.h>
 #include <linux/bpf-cgroup.h>
 
+
+#ifdef CONFIG_PROFILE_TCP
+enum tcp_counting_e {
+	TCP_COUNT_SEND = 0,
+	TCP_COUNT_ITER,
+	TCP_COUNT_FIRST_SKB,
+	TCP_COUNT_ALLOC_SKB,
+	TCP_COUNT_PAYLOAD_IN_HEAD,
+	TCP_COUNT_PAYLOAD_IN_PAGE_FRAG,
+	TCP_COUNT_PAGE_FRAG_NEW_PAGE_ONE,
+	TCP_COUNT_PAGE_FRAG_NEW_PAGE_MANY,
+	TCP_COUNT_MERGE_PAGE_FRAG,
+	TCP_COUNT_FRAGMENT_PAGE_FRAG,
+	TCP_COUNT_PAGE_FRAG_OVERFLOW,
+	TCP_COUNT_NR
+};
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e type, int cpu);
+#else
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e type, int cpu) { return -1; }
+#endif
+
+
 extern struct inet_hashinfo tcp_hashinfo;
 
 extern struct percpu_counter tcp_orphan_count;

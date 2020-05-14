@@ -753,3 +753,10 @@ config TCP_MD5SIG
 	  on the Internet.
 
 	  If unsure, say N.
+
+config PROFILE_TCP
+	tristate "TCP: tot0ro>> profiling support"
+	default y
+	---help---
+	profiling support.
+	counter, debug, etc..
