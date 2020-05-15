@@ -1050,10 +1050,14 @@ ssize_t do_tcp_sendpages(struct sock *sk, struct page *page, int offset,
 	if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
 		goto out_err;
 
+	profile_tcp_count_inc(TCP_COUNT_SEND, smp_processor_id());
+
 	while (size > 0) {
 		struct sk_buff *skb = tcp_write_queue_tail(sk);
 		int copy, i;
 		bool can_coalesce;
+
+		profile_tcp_count_inc(TCP_COUNT_ITER, smp_processor_id());
 
 		if (!skb || (copy = size_goal - skb->len) <= 0 ||
 		    !tcp_skb_can_collapse_to(skb)) {
@@ -1066,6 +1070,8 @@ new_segment:
 			if (!skb)
 				goto wait_for_memory;
 
+			profile_tcp_count_inc(TCP_COUNT_ALLOC_SKB, smp_processor_id());
+
 			skb_entail(sk, skb);
 			copy = size_goal;
 		}
@@ -1073,19 +1079,23 @@ new_segment:
 		if (copy > size)
 			copy = size;
 
+		profile_tcp_count_inc(TCP_COUNT_PAYLOAD_IN_PAGE_FRAG, smp_processor_id());
 		i = skb_shinfo(skb)->nr_frags;
 		can_coalesce = skb_can_coalesce(skb, i, page, offset);
 		if (!can_coalesce && i >= sysctl_max_skb_frags) {
 			tcp_mark_push(tp, skb);
+			profile_tcp_count_inc(TCP_COUNT_PAGE_FRAG_OVERFLOW, smp_processor_id());
 			goto new_segment;
 		}
 		if (!sk_wmem_schedule(sk, copy))
 			goto wait_for_memory;
 
 		if (can_coalesce) {
+			profile_tcp_count_inc(TCP_COUNT_MERGE_PAGE_FRAG, smp_processor_id());
 			skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
 		} else {
 			get_page(page);
+			profile_tcp_count_inc(TCP_COUNT_FRAGMENT_PAGE_FRAG, smp_processor_id());
 			skb_fill_page_desc(skb, i, page, offset, copy);
 		}
 
