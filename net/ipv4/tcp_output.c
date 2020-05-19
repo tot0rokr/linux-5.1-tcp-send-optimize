@@ -45,6 +45,10 @@
 
 #include <trace/events/tcp.h>
 
+#ifdef CONFIG_PROFILE_TCP
+void profile_tcp_skb(struct sock *sk, struct sk_buff *skb);
+#endif
+
 /* Refresh clocks of a TCP socket,
  * ensuring monotically increasing values.
  */
@@ -1156,6 +1160,7 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 	memset(skb->cb, 0, max(sizeof(struct inet_skb_parm),
 			       sizeof(struct inet6_skb_parm)));
 
+	profile_tcp_skb(sk, skb);
 	err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
 
 	if (unlikely(err > 0)) {

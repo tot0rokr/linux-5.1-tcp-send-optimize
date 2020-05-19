@@ -283,6 +283,7 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
+/* For profiling TCP */
 #ifdef CONFIG_PROFILE_TCP
 /* alreadt implemented in include/net/tcp.h
 enum tcp_counting_e {
@@ -301,21 +302,38 @@ enum tcp_counting_e {
 };
 */
 
-enum profile_tcp_type_e {
-	PROFILE_TCP_TYPE_PAGE = 0,
-	PROFILE_TCP_TYPE_MSG,
-	PROFILE_TCP_TYPE_NR
+/* TCP method type.
+ * ~PAGE: tcp_sendpage
+ * ~MSG: tcp_sendmsg
+ */
+enum profile_tcp_method_type_e {
+	PROFILE_TCP_MTYPE_PAGE = 0,
+	PROFILE_TCP_MTYPE_MSG,
+	PROFILE_TCP_MTYPE_NR
 };
+
+/* when and where is sending processed */
+enum profile_tcp_skb_e {
+	PROFILE_TCP_SKB_PENDING = 0,
+	PROFILE_TCP_SKB_PUT,
+	PROFILE_TCP_SKB_WAIT,
+	PROFILE_TCP_SKB_OUT_LAST,
+	PROFILE_TCP_SKB_NR
+};
+
+/* For counting how skb is processed */
 #ifdef CONFIG_PROFILE_TCP_FUNC
 DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR], tcp_profile_counting);
 struct timer_list watch_tcp_profile_counting;
 
+/* counter inc */
 inline unsigned long profile_tcp_count_inc(enum tcp_counting_e type, int cpu)
 {
 	unsigned long *counter = &per_cpu(tcp_profile_counting[type], cpu);
 	return (*counter)++;
 }
 
+/* timer handler */
 static void watch_lookup_count_fn(struct timer_list *t)
 {
 	int cpu;
@@ -342,6 +360,7 @@ static void watch_lookup_count_fn(struct timer_list *t)
 	mod_timer(t, jiffies + msecs_to_jiffies(2000));
 }
 
+/* timer initialization */
 static void profile_tcp_counter_init(void)
 {
 	int cpu;
@@ -366,17 +385,62 @@ static inline void watch_lookup_count_fn(struct timer_list *t) {}
 static inline void profile_tcp_counter_init(void) {}
 #endif /* CONFIG_PROFILE_TCP_FUNC */
 
+/* measure initial packet size */
 #ifdef CONFIG_PROFILE_TCP_PACKET_OPEN
 static void profile_tcp_packet(struct sock *sk, struct sk_buff *skb, int size,
-		enum profile_tcp_type_e type) {
+		enum profile_tcp_method_type_e type)
+{
 	__be32 dip = sk->sk_daddr;
-	printk("type(%d), sk(%p), ip:%10u, size:%10d", type, sk, ntohl(dip), size);
+	printk("type(%d), cpu(%d), sk(%p), skb(%p), ip:%10u, size:%10d",
+			type, smp_processor_id(), sk, skb, ntohl(dip), size);
 }
 
 #else /* CONFIG_PROFILE_TCP_PACKET_OPEN */
-static inline void profile_tcp_packet(struct sock sk, struct sk_buff skb, int size,
-		enum profile_tcp_type_e type) {}
+static inline void profile_tcp_packet(struct sock *sk, struct sk_buff *skb, int size,
+		enum profile_tcp_method_type_e type) {}
 #endif /* CONFIG_PROFILE_TCP_PACKET_OPEN */
+
+/* loging skb field */
+#ifdef CONFIG_PROFILE_TCP_SKB
+static void profile_tcp_skb_shared_info(struct sk_buff *skb)
+{
+	struct skb_shared_info *sh = skb_shinfo(skb);
+	int nr_frags = sh->nr_frags;
+	int i;
+	printk("shared_info: skb(%p), nr_frags(%2d)", skb, nr_frags);
+	printk("           : gso_size(%6u), gso_segs(%2u), gso_type(%2d)",
+			sh->gso_size, sh->gso_segs, sh->gso_type);
+	for (i = 0; i < nr_frags; i++) {
+		skb_frag_t *frag = &(sh->frags[i]);
+		printk("           : page(%p), offset(%6u), size(%6u)",
+				frag->page.p, frag->page_offset, frag->size);
+	}
+}
+
+void profile_tcp_skb(struct sock *sk, struct sk_buff *skb)
+{
+	struct sk_buff_fclones *fclone = NULL;
+	if (skb->fclone == SKB_FCLONE_ORIG)
+		fclone = container_of(skb, struct sk_buff_fclones, skb1);
+	else if(skb->fclone == SKB_FCLONE_CLONE)
+		fclone = container_of(skb, struct sk_buff_fclones, skb2);
+	printk("skb: sk(%p), skb(%p), len(%5d), data_len(%5d), headlen(%4d), "
+			"\n     cpu(%d), head(%p), shared_info(%p), skb_fclone(%p - %d)",
+			sk, skb, skb->len, skb->data_len, skb_headlen(skb),
+			smp_processor_id(), skb->head, skb->head + skb->end, fclone, skb->fclone);
+	profile_tcp_skb_shared_info(skb);
+}
+
+/* static void profile_tcp_send_route(struct sock *sk, enum profile_tcp_skb_e type) */
+/* { */
+	/* printk("route: sk(%p), type(%d)", sk, type); */
+/* } */
+static inline void profile_tcp_send_route(struct sock *sk, enum profile_tcp_skb_e type) {}
+#else /* CONFIG_PROFILE_TCP_SKB */
+static inline void profile_tcp_skb_shared_info(struct sk_buff *skb) {}
+void profile_tcp_skb(struct sock *sk, struct sk_buff *skb) {}
+static inline void profile_tcp_send_route(struct sock *sk, enum profile_tcp_skb_e type) {}
+#endif /* CONFIG_PROFILE_TCP_SKB */
 
 #else /* CONFIG_PROFILE_TCP */
 static inline void profile_tcp_counter_init(void) {}
@@ -1136,7 +1200,7 @@ new_segment:
 		TCP_SKB_CB(skb)->end_seq += copy;
 		tcp_skb_pcount_set(skb, 0);
 
-		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_TYPE_PAGE);
+		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_MTYPE_PAGE);
 
 		if (!copied)
 			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
@@ -1144,22 +1208,30 @@ new_segment:
 		copied += copy;
 		offset += copy;
 		size -= copy;
-		if (!size)
+		if (!size) {
+			/* profile_tcp_skb(sk, skb); */
 			goto out;
+		}
 
 		if (skb->len < size_goal || (flags & MSG_OOB))
 			continue;
 
+		/* profile_tcp_skb(sk, skb); */
+
 		if (forced_push(tp)) {
+			profile_tcp_send_route(sk, PROFILE_TCP_SKB_PENDING);
 			tcp_mark_push(tp, skb);
 			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-		} else if (skb == tcp_send_head(sk))
+		} else if (skb == tcp_send_head(sk)) {
+			profile_tcp_send_route(sk, PROFILE_TCP_SKB_PUT);
 			tcp_push_one(sk, mss_now);
+		}
 		continue;
 
 wait_for_sndbuf:
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
+		profile_tcp_send_route(sk, PROFILE_TCP_SKB_WAIT);
 		tcp_push(sk, flags & ~MSG_MORE, mss_now,
 			 TCP_NAGLE_PUSH, size_goal);
 
@@ -1173,8 +1245,10 @@ wait_for_memory:
 out:
 	if (copied) {
 		tcp_tx_timestamp(sk, sk->sk_tsflags);
-		if (!(flags & MSG_SENDPAGE_NOTLAST))
+		if (!(flags & MSG_SENDPAGE_NOTLAST)) {
+			profile_tcp_send_route(sk, PROFILE_TCP_SKB_OUT_LAST);
 			tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
+		}
 	}
 	return copied;
 
@@ -1506,10 +1580,10 @@ new_segment:
 			copy = err;
 		}
 
+		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_MTYPE_MSG);
+
 		if (!copied)
 			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
-
-		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_TYPE_MSG);
 
 		tp->write_seq += copy;
 		TCP_SKB_CB(skb)->end_seq += copy;
