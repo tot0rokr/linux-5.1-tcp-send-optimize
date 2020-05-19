@@ -758,5 +758,19 @@ config PROFILE_TCP
 	tristate "TCP: tot0ro>> profiling support"
 	default y
 	---help---
-	profiling support.
+	tcp profiling support.
+
+config PROFILE_TCP_FUNC
+	tristate "TCP: tot0ro>> how tcp send do"
+	default y
+	depends on PROFILE_TCP
+	---help---
+	profiling support how tcp send do
 	counter, debug, etc..
+
+config PROFILE_TCP_PACKET_OPEN
+	tristate "TCP: tot0ro>> how size of packet send in tcp send"
+	default y
+	depends on PROFILE_TCP
+	---help---
+	profiling support how size of packet send in tcp send

@@ -300,6 +300,13 @@ enum tcp_counting_e {
 11	TCP_COUNT_NR
 };
 */
+
+enum profile_tcp_type_e {
+	PROFILE_TCP_TYPE_PAGE = 0,
+	PROFILE_TCP_TYPE_MSG,
+	PROFILE_TCP_TYPE_NR
+};
+#ifdef CONFIG_PROFILE_TCP_FUNC
 DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR], tcp_profile_counting);
 struct timer_list watch_tcp_profile_counting;
 
@@ -335,7 +342,7 @@ static void watch_lookup_count_fn(struct timer_list *t)
 	mod_timer(t, jiffies + msecs_to_jiffies(2000));
 }
 
-static void tcp_profile_counter_init(void)
+static void profile_tcp_counter_init(void)
 {
 	int cpu;
 	printk("profile counter init");
@@ -353,10 +360,27 @@ static void tcp_profile_counter_init(void)
 	add_timer(&watch_tcp_profile_counting);
 	printk("profile timer  init");
 }
+#else /* CONFIG_PROFILE_TCP_FUNC */
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e type, int cpu) { return -1; }
+static inline void watch_lookup_count_fn(struct timer_list *t) {}
+static inline void profile_tcp_counter_init(void) {}
+#endif /* CONFIG_PROFILE_TCP_FUNC */
 
-#else
-static void tcp_profile_counter_init(void) {}
-#endif
+#ifdef CONFIG_PROFILE_TCP_PACKET_OPEN
+static void profile_tcp_packet(struct sock *sk, struct sk_buff *skb, int size,
+		enum profile_tcp_type_e type) {
+	__be32 dip = sk->sk_daddr;
+	printk("type(%d), sk(%p), ip:%10u, size:%10d", type, sk, ntohl(dip), size);
+}
+
+#else /* CONFIG_PROFILE_TCP_PACKET_OPEN */
+static inline void profile_tcp_packet(struct sock sk, struct sk_buff skb, int size,
+		enum profile_tcp_type_e type) {}
+#endif /* CONFIG_PROFILE_TCP_PACKET_OPEN */
+
+#else /* CONFIG_PROFILE_TCP */
+static inline void profile_tcp_counter_init(void) {}
+#endif /* CONFIG_PROFILE_TCP */
 
 
 struct percpu_counter tcp_orphan_count;
@@ -1112,6 +1136,8 @@ new_segment:
 		TCP_SKB_CB(skb)->end_seq += copy;
 		tcp_skb_pcount_set(skb, 0);
 
+		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_TYPE_PAGE);
+
 		if (!copied)
 			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
 
@@ -1482,6 +1508,8 @@ new_segment:
 
 		if (!copied)
 			TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
+
+		profile_tcp_packet(sk, skb, copy, PROFILE_TCP_TYPE_MSG);
 
 		tp->write_seq += copy;
 		TCP_SKB_CB(skb)->end_seq += copy;
@@ -4056,7 +4084,7 @@ void __init tcp_init(void)
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
 
-	tcp_profile_counter_init();
+	profile_tcp_counter_init();
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;
