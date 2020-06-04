@@ -407,27 +407,42 @@ static void profile_tcp_skb_shared_info(struct sk_buff *skb)
 	struct skb_shared_info *sh = skb_shinfo(skb);
 	int nr_frags = sh->nr_frags;
 	int i;
-	printk("shared_info: skb(%p), nr_frags(%2d)", skb, nr_frags);
-	printk("           : gso_size(%6u), gso_segs(%2u), gso_type(%2d)",
-			sh->gso_size, sh->gso_segs, sh->gso_type);
+	/*
+	 * printk("shared_info: skb(%p), nr_frags(%2d)", skb, nr_frags);
+	 * printk("             gso_size(%6u), gso_segs(%2u), gso_type(%2d)",
+	 *             sh->gso_size, sh->gso_segs, sh->gso_type);
+	 */
 	for (i = 0; i < nr_frags; i++) {
 		skb_frag_t *frag = &(sh->frags[i]);
-		printk("           : page(%p), offset(%6u), size(%6u)",
-				frag->page.p, frag->page_offset, frag->size);
+		/*
+		 * printk("             page(%p), offset(%6u), size(%6u)",
+		 *             frag->page.p, frag->page_offset, frag->size);
+		 */
+		printk("     page/%p", frag->page.p);
 	}
 }
 
 void profile_tcp_skb(struct sock *sk, struct sk_buff *skb)
 {
-	struct sk_buff_fclones *fclone = NULL;
-	if (skb->fclone == SKB_FCLONE_ORIG)
-		fclone = container_of(skb, struct sk_buff_fclones, skb1);
-	else if(skb->fclone == SKB_FCLONE_CLONE)
-		fclone = container_of(skb, struct sk_buff_fclones, skb2);
-	printk("skb: sk(%p), skb(%p), len(%5d), data_len(%5d), headlen(%4d), "
-			"\n     cpu(%d), head(%p), shared_info(%p), skb_fclone(%p - %d)",
-			sk, skb, skb->len, skb->data_len, skb_headlen(skb),
-			smp_processor_id(), skb->head, skb->head + skb->end, fclone, skb->fclone);
+	/* struct tcphdr *th = tcp_hdr(skb); */
+	/*
+	 * struct sk_buff_fclones *fclone = NULL;
+	 * if (skb->fclone == SKB_FCLONE_ORIG)
+	 *       fclone = container_of(skb, struct sk_buff_fclones, skb1);
+	 * else if(skb->fclone == SKB_FCLONE_CLONE)
+	 *       fclone = container_of(skb, struct sk_buff_fclones, skb2);
+	 */
+	/*
+	 * printk("skb: sk(%p), skb(%p), len(%5d), data_len(%5d), headlen(%4d), det(%p)"
+	 *             "\n     cpu(%d), head(%p), shared_info(%p), skb_fclone(%p - %d)",
+	 *             sk, skb, skb->len, skb->data_len, skb_headlen(skb), skb_dst(skb),
+	 *             smp_processor_id(), skb->head, skb->head + skb->end, fclone, skb->fclone);
+	 */
+	printk("sk/%p/skb/%p/head/%p", sk, skb, skb->head);
+	/*
+	 * printk("     flags(%d %d / %d %d %d %d %d %d %d %d)", th->res1, th->doff,
+	 *             th->fin, th->syn, th->rst, th->psh, th->ack, th->urg, th->ece, th->cwr);
+	 */
 	profile_tcp_skb_shared_info(skb);
 }
 
