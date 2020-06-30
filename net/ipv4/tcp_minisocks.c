@@ -848,6 +848,12 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	sock_rps_save_rxhash(child, skb);
 	tcp_synack_rtt_meas(child, req);
 	*req_stolen = !own_req;
+
+	if (req && !rsk_flag(req, RSK_CACHED)) {
+		if (tcp_cache_reqsk(req));
+			/* pr_info("cache request_sock req(0x%p) count:%d #%d cpu\n", req->dst_cache, refcount_read(&req->rsk_refcnt), smp_processor_id()); */
+	}
+
 	return inet_csk_complete_hashdance(sk, child, req, own_req);
 
 listen_overflow:

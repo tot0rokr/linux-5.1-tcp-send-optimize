@@ -3895,8 +3895,8 @@ struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 		return res;
 
 	/* now iterate the bucket list */
-	/* preempt_disable(); */
-	local_irq_save(irq_flag);
+	preempt_disable();
+	/* local_irq_save(irq_flag); */
 	hlist_for_each_entry(cur, &head->head, cached_list) {
 		if (TCP_RSK_MATCH(cur, dip, sip, port)) {
 			if (!rsk_flag(cur, RSK_INUSE)) {
@@ -3912,8 +3912,8 @@ struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 		}
 	}
 
-	/* preempt_enable(); */
-	local_irq_restore(irq_flag);
+	preempt_enable();
+	/* local_irq_restore(irq_flag); */
 
 	return res;
 }
@@ -3985,11 +3985,11 @@ bool tcp_cache_reqsk(struct request_sock *req)
 		rsk_set_flag(req, RSK_CACHED);
 		wmb();
 
-		/* preempt_disable(); */
-		local_irq_save(irq_flag);
+		preempt_disable();
+		/* local_irq_save(irq_flag); */
 		ret = tcp_rsk_insert_bucket(hashinfo, req);
-		/* preempt_enable(); */
-		local_irq_restore(irq_flag);
+		preempt_enable();
+		/* local_irq_restore(irq_flag); */
 
 		if (ret < 0)
 			goto error;
