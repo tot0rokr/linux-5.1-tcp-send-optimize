@@ -3888,31 +3888,33 @@ struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 	__u16 port = ntohs(dport);
 
 	struct request_sock *res = NULL;
-	unsigned long irq_flag;
+	/* unsigned long irq_flag; */
 
 	/* There is no cached request_sock */
-	if (!head->head.first)
+	if (unlikely(hlist_empty(&head->head)))
 		return res;
 
 	/* now iterate the bucket list */
-	preempt_disable();
+	/* preempt_disable(); */
 	/* local_irq_save(irq_flag); */
 	hlist_for_each_entry(cur, &head->head, cached_list) {
-		if (TCP_RSK_MATCH(cur, dip, sip, port)) {
-			if (!rsk_flag(cur, RSK_INUSE)) {
-				rsk_set_flag(cur, RSK_INUSE);
-				if (!(*dst = cur->dst_cache)) {
-					pr_err("tcp_sock error: can't find dst in sock\n");
-					rsk_reset_flag(cur, RSK_INUSE);
-					break;
-				}
-				res = cur;
+		if (TCP_RSK_MATCH(cur, dip, sip, port)
+			&& !rsk_flag(cur, RSK_INUSE)
+			&& !rsk_test_and_set_flag(cur, RSK_ACCESS)) {
+			rsk_set_flag(cur, RSK_INUSE);
+			if (!(*dst = cur->dst_cache)) {
+				pr_err("tcp_sock error: can't find dst in sock\n");
+				rsk_reset_flag(cur, RSK_INUSE);
+				rsk_reset_flag(cur, RSK_ACCESS);
 				break;
 			}
+			res = cur;
+			rsk_reset_flag(cur, RSK_ACCESS);
+			break;
 		}
 	}
 
-	preempt_enable();
+	/* preempt_enable(); */
 	/* local_irq_restore(irq_flag); */
 
 	return res;
@@ -3928,8 +3930,13 @@ static int tcp_rsk_insert_bucket(struct tcp_sock_hashinfo *hashinfo,
 	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
 	unsigned int slot = hash & hash_mask;
 	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+	unsigned long irq_flag;
 
+	/* preempt_disable(); */
+	local_irq_save(irq_flag);
 	hlist_add_head(&req->cached_list, &head->head);
+	local_irq_restore(irq_flag);
+	/* preempt_enable(); */
 	head->count++;
 	hashinfo->num_entry++;
 
@@ -3976,7 +3983,7 @@ bool tcp_cache_reqsk(struct request_sock *req)
 	struct dst_entry *dst = req->dst_cache;
 	int cpu = smp_processor_id();
 	int ret;
-	unsigned long irq_flag;
+	/* unsigned long irq_flag; */
 
 	hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
 
@@ -3985,10 +3992,10 @@ bool tcp_cache_reqsk(struct request_sock *req)
 		rsk_set_flag(req, RSK_CACHED);
 		wmb();
 
-		preempt_disable();
+		/* preempt_disable(); */
 		/* local_irq_save(irq_flag); */
 		ret = tcp_rsk_insert_bucket(hashinfo, req);
-		preempt_enable();
+		/* preempt_enable(); */
 		/* local_irq_restore(irq_flag); */
 
 		if (ret < 0)

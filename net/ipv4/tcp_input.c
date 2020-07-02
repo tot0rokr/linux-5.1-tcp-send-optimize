@@ -6435,6 +6435,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	}
 
 	req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);
+
 	if (!req)
 		goto drop;
 
@@ -6474,6 +6475,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 
 	/* Should I increase ref count of dst to maintain it be not freed? */
 	req->dst_cache = dst;
+	req->cache_flag = 0;
 
 	if (!want_cookie && !isn) {
 		/* Kill the following clause, if you dislike this way. */
@@ -6515,7 +6517,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	}
 
 	/* cache request_sock in here */
-	if (tcp_cache_reqsk(req));
+	/* if (tcp_cache_reqsk(req)); */
 		/* pr_info("cache request_sock on #%d cpu\n", cpu); */
 
 	if (fastopen_sk) {

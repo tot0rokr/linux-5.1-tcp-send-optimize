@@ -634,8 +634,39 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 /* If you need lock for bucket list, Add it and should init at boot time */
 struct tcp_reqsk_hashbucket {
 	unsigned int		count;
+	// unsigned long		flag;
 	struct hlist_head	head;
 };
+
+/*
+ * enum tcp_reqsk_hashbucket_flag {
+ *       H_RSK_ACCESS,
+ * }
+ * 
+ * static __always_inline bool h_rsk_test_and_set_flag(struct tcp_reqsk_hashbucket *h,
+ *                                enum tcp_reqsk_hashbucket_flag flag)
+ * {
+ *       return test_and_set_bit(flag, &h->flag);
+ * }
+ * 
+ * static __always_inline void h_rsk_set_flag(struct tcp_reqsk_hashbucket *h,
+ *                                enum tcp_reqsk_hashbucket_flag flag)
+ * {
+ *       __set_bit(flag, &h->flag);
+ * }
+ * 
+ * static __always_inline void h_rsk_reset_flag(struct tcp_reqsk_hashbucket *h,
+ *                                enum tcp_reqsk_hashbucket_flag flag)
+ * {
+ *       __clear_bit(flag, &h->flag);
+ * }
+ * 
+ * static __always_inline bool h_rsk_flag(struct tcp_reqsk_hashbucket *h,
+ *                                enum tcp_reqsk_hashbucket_flag flag)
+ * {
+ *       return test_bit(flag, &h->flag);
+ * }
+ */
 
 struct tcp_sock_hashinfo {
 	unsigned int num_entry;
