@@ -362,12 +362,16 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	struct tcp_fastopen_cookie foc = { .len = -1 };
 	struct tcp_options_received tmp_opt;
 	struct sock *fastopen_sk = NULL;
-	struct net *net = sock_net(sk);
+
+	profile_cycle_timer_start(FAST_REQSK, smp_processor_id());
 
 	/* reqsk_alloc */
 	sk_node_init(&req_to_sk(req)->sk_node);
 	req->num_timeout = 0;
 	req->num_retrans = 0;
+	refcount_inc(&sk->sk_refcnt);
+	req->rsk_listener = sk;
+	refcount_set(&req->rsk_refcnt, 0);
 
 	/* inet_reqsk_alloc */
 	ireq->ireq_state = TCP_NEW_SYN_RECV;
@@ -411,6 +415,8 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	/* check fastopen without considering syn cookies */
 	/* tcp_reqsk_record_syn in tcp_input.c */
 	fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
+
+	profile_tcp_count_inc(FAST_REQSK, FAST_REQSK, smp_processor_id());
 
 	/* final stage */
 	if (fastopen_sk) {
@@ -848,6 +854,12 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	sock_rps_save_rxhash(child, skb);
 	tcp_synack_rtt_meas(child, req);
 	*req_stolen = !own_req;
+
+	/* if (req && !rsk_flag(req, RSK_CACHED)) { */
+		/* if (tcp_cache_reqsk(req)); */
+			/* [> pr_info("cache request_sock req(0x%p) count:%d #%d cpu\n", req->dst_cache, refcount_read(&req->rsk_refcnt), smp_processor_id()); <] */
+	/* } */
+
 	return inet_csk_complete_hashdance(sk, child, req, own_req);
 
 listen_overflow:

@@ -937,6 +937,9 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 	struct flowi4 fl4;
 	int err = -1;
 	struct sk_buff *skb;
+	int cached = 0;
+
+	profile_cycle_timer_start(SEND_SYNACK, smp_processor_id());
 
 	/* First, grab a route. */
 	if (!dst && (dst = inet_csk_route_req(sk, &fl4, req)) == NULL)
@@ -950,6 +953,10 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 		struct tcphdr *th;
 		struct skb_shared_info *shinfo;
 		struct tcp_out_options opts;
+
+		profile_cycle_timer_start(FAST_SYNACK, smp_processor_id());
+
+		cached = 1;
 
 		skb = req->synack;
 		shinfo = skb_shinfo(skb);
@@ -980,6 +987,7 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 		/* Do something not to release synack packet */
 		refcount_set(&skb->users, 2);
 		atomic_set(&shinfo->dataref, 2);
+		profile_tcp_count_inc(FAST_SYNACK, FAST_SYNACK, smp_processor_id());
 	}
 
 	if (skb) {
@@ -992,6 +1000,11 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 		rcu_read_unlock();
 		err = net_xmit_eval(err);
 	}
+
+	if (cached)
+		profile_tcp_count_inc(FAST_SYNACK, SYNACK_SLAB, smp_processor_id());
+	else
+		profile_tcp_count_inc(SYNACK_SLAB, SEND_SYNACK, smp_processor_id());
 
 	return err;
 }
@@ -1577,6 +1590,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 			}
 		}
 		tcp_rcv_established(sk, skb);
+		profile_tcp_count_inc(RCV_SYN, RCV_EST, smp_processor_id());
 		return 0;
 	}
 
@@ -1830,6 +1844,8 @@ int tcp_v4_rcv(struct sk_buff *skb)
 	struct sock *sk;
 	int ret;
 
+	profile_cycle_timer_start(RCV_SYN, smp_processor_id());
+
 	if (skb->pkt_type != PACKET_HOST)
 		goto discard_it;
 
@@ -1919,6 +1935,7 @@ process:
 			goto discard_and_relse;
 		} else {
 			sock_put(sk);
+			profile_tcp_count_inc(RCV_SYN, RCV_ACK, smp_processor_id());
 			return 0;
 		}
 	}

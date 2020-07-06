@@ -284,6 +284,116 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
+
+
+
+DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR][2], profile_tcp_counting);
+DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR], profile_start_timer);
+struct timer_list watch_tcp_profile_counting;
+
+/* counter inc */
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e begin,
+							 enum tcp_counting_e fin, int cpu)
+{
+	cycles_t start = get_cycles();
+      unsigned long *start_timer = &per_cpu(profile_start_timer[begin], cpu);
+      unsigned long (*counter)[2] = &per_cpu(profile_tcp_counting[fin], cpu);
+	(*counter)[1]++;
+      return (*counter)[0] += start - *start_timer;
+}
+
+inline unsigned long profile_cycle_timer_start(enum tcp_counting_e type, int cpu)
+{
+      unsigned long *start_timer = &per_cpu(profile_start_timer[type], cpu);
+	cycles_t start = get_cycles();
+
+      return *start_timer = start;
+}
+
+/* timer handler */
+static void watch_lookup_count_fn(struct timer_list *t)
+{
+      int cpu;
+/*
+ *       unsigned long sum[TCP_COUNT_NR] = {0};
+ *       char sum_str[500] = "";
+ *       int i;
+ * 
+ *       printk("            SEND      , ITERATION , FIRST_SKB , ALLOC_SKB , "
+ *                   "IN_HEAD   , IN_FRAG   , NEW_ONE   , NEW_MANY  , MERGE     , "
+ *                   "FRAGMENT  , OVERFLOW  ");
+ *       for_each_online_cpu(cpu) {
+ *             char str[500] = "";
+ *             for (i = 0; i < TCP_COUNT_NR; i++) {
+ *                   unsigned long count = per_cpu(tcp_profile_counting[i], cpu);
+ *                   sprintf(str, "%s, %-10ld", str, count);
+ *                   sum[i] += count;
+ *             }
+ *             printk("core(%2d): %s", cpu, str);
+ *       }
+ */
+	/*
+       * for (i = 0; i < TCP_COUNT_NR; i++) {
+       *       sprintf(sum_str, "%s, %-10ld", sum_str, sum[i]);
+       * }
+	 */
+	/*
+       * printk("total   : %s\n", sum_str);
+	 */
+	int i;
+	/*
+	 * unsigned long val[TCP_COUNT_NR] = {0};
+	 */
+	for_each_online_cpu(cpu) {
+		char str[500] = "";
+		char str2[1000] = "";
+		char str3[1000] = "";
+		for (i = 0; i < TCP_COUNT_NR; i++) {
+			unsigned long val = 0;
+			unsigned long total = per_cpu(profile_tcp_counting[i][0], cpu);
+			unsigned long count = per_cpu(profile_tcp_counting[i][1], cpu);
+			if (count > 0) {
+				val = total / count;
+			}
+			sprintf(str, "%s,%-8ld", str, val);
+			sprintf(str2, "%s,%-8ld", str2, total);
+			sprintf(str3, "%s,%-8ld", str3, count);
+		}
+		printk("average_cycles: %s", str);
+		printk("cycles        : %s", str2);
+		printk("counts        : %s", str3);
+		break;
+	}
+      mod_timer(t, jiffies + msecs_to_jiffies(5000));
+}
+
+/* timer initialization */
+void profile_tcp_counter_init(void)
+{
+      int cpu;
+      printk("profile counter init");
+
+      for_each_online_cpu(cpu) {
+            int i;
+            for (i = 0; i < TCP_COUNT_NR; i++) {
+                  unsigned long (*count)[2] = &per_cpu(profile_tcp_counting[i], cpu);
+                  (*count)[0] = 0;
+                  (*count)[1] = 0;
+            }
+            for (i = 0; i < TCP_COUNT_NR; i++) {
+                  unsigned long *count = &per_cpu(profile_start_timer[i], cpu);
+                  *count = 0;
+            }
+      }
+
+      timer_setup(&watch_tcp_profile_counting, watch_lookup_count_fn, 0);
+      watch_tcp_profile_counting.expires = jiffies + msecs_to_jiffies(10000);
+      add_timer(&watch_tcp_profile_counting);
+      printk("profile timer  init");
+}
+
+
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -317,8 +427,9 @@ struct tcp_splice_state {
  * maybe it doesn't need to be exported to other layer
  * This hash tables will be used only by TCP layer
  */
-/* Does it need to be initialized?? for hlist_head?? */
-DEFINE_PER_CPU(struct tcp_sock_hashinfo, tcp_sk_hashinfo);
+DEFINE_PER_CPU(struct tcp_connection_histroy_map, tcp_chm);
+/* static struct tcp_connection_histroy_map tcp_chm; */
+static struct kmem_cache *tcp_chm_cache;
 
 /*
  * Pressure flag: try to collapse.
@@ -3876,121 +3987,232 @@ static u32 tcp_sock_hashfn(const __be32 dip, const __be32 sip, const __be16 dpor
 /* This function returns either of sock or request_sock.
  * Before the user uses it, cast the pointer to a intended type
  */
-struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
-		struct dst_entry **dst, const __be32 dip, const __be32 sip,
-		const __be16 dport)
+struct request_sock *tcp_rsk_lookup(struct dst_entry **dst, const __be32 dip,
+		const __be32 sip, const __be16 dport)
 {
 	struct request_sock *cur;
-	unsigned int hash = tcp_sock_hashfn(dip, sip, dport);
-	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
-	unsigned int slot = hash & hash_mask;
-	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+	/* unsigned int hash = tcp_sock_hashfn(dip, sip, dport); */
+	/* unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1; */
+	/* unsigned int slot = hash & hash_mask; */
+	/* struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot]; */
 	__u16 port = ntohs(dport);
+	struct tcp_chm_tuple *tct;
+	struct tcp_reqsk_bucket *head;
+
+	struct request_sock *res = NULL;
+	/* unsigned long irq_flag; */
+
+	tct = lookup_tcp_chm_tuple(dip, sip, port);
+	if (!tct)
+		return res;
+
+	head = &tct->reqsk_bucket;
 
 	/* There is no cached request_sock */
-	if (!head->head.first)
-		return NULL;
+	if (unlikely(hlist_empty(&head->head)))
+		return res;
 
 	/* now iterate the bucket list */
-	preempt_disable();
+	/* preempt_disable(); */
+	/* local_irq_save(irq_flag); */
 	hlist_for_each_entry(cur, &head->head, cached_list) {
-		if (TCP_RSK_MATCH(cur, dip, sip, port)) {
-			if (!rsk_flag(cur, RSK_INUSE)) {
-				rsk_set_flag(cur, RSK_INUSE);
-				if (!(*dst = cur->dst_cache)) {
-					pr_err("tcp_sock error: can't find dst in sock\n");
-					rsk_reset_flag(cur, RSK_INUSE);
-					preempt_enable();
-
-					return NULL;
-				}
-				preempt_enable();
-
-				return cur;
+		/* if (TCP_RSK_MATCH(cur, dip, sip, port) */
+		if (!rsk_flag(cur, RSK_INUSE)
+			&& !rsk_test_and_set_flag(cur, RSK_ACCESS)) {
+			rsk_set_flag(cur, RSK_INUSE);
+			if (unlikely(!(*dst = cur->dst_cache))) {
+				pr_err("tcp_sock error: can't find dst in sock\n");
+				rsk_reset_flag(cur, RSK_INUSE);
+				rsk_reset_flag(cur, RSK_ACCESS);
+				break;
 			}
+			res = cur;
+			rsk_reset_flag(cur, RSK_ACCESS);
+			break;
 		}
 	}
-	preempt_enable();
 
-	return NULL;
+	/* preempt_enable(); */
+	/* local_irq_restore(irq_flag); */
+
+	return res;
 }
 
-static int tcp_rsk_insert_bucket(struct tcp_sock_hashinfo *hashinfo,
+static int tcp_rsk_insert_bucket(struct tcp_chm_tuple *tct,
 				   struct request_sock *req)
 {
-	__be32 dip = req_to_sk(req)->sk_rcv_saddr;
-	__be32 sip = req_to_sk(req)->sk_daddr;
-	__be16 dport = htons(inet_rsk(req)->ir_num);
-	unsigned int hash = tcp_sock_hashfn(dip, sip, dport);
-	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
-	unsigned int slot = hash & hash_mask;
-	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+	/* __be32 dip = req_to_sk(req)->sk_rcv_saddr; */
+	/* __be32 sip = req_to_sk(req)->sk_daddr; */
+	/* __be16 dport = htons(inet_rsk(req)->ir_num); */
+	/* unsigned int hash = tcp_sock_hashfn(dip, sip, dport); */
+	/* unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1; */
+	/* unsigned int slot = hash & hash_mask; */
+	/* struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot]; */
+	struct tcp_reqsk_bucket *head = &tct->reqsk_bucket;
+	unsigned long irq_flag;
 
+	/* preempt_disable(); */
+	profile_cycle_timer_start(INSERT_OBJ, smp_processor_id());
+	local_irq_save(irq_flag);
 	hlist_add_head(&req->cached_list, &head->head);
+	local_irq_restore(irq_flag);
+	profile_tcp_count_inc(INSERT_OBJ, INSERT_OBJ, smp_processor_id());
+	/* preempt_enable(); */
 	head->count++;
-	hashinfo->num_entry++;
+	/* hashinfo->num_entry++; */
 
 	return 0;
 }
 
-unsigned int targets[15] = {2744689325, /* 163.152.162.173 */
-			    2744689327, /* 163.152.162.175 */
-			    2744652863, /* 163.152.20.63 */
-			    2744652865, /* 163.152.20.65 */
-			    3232266980, /* 192.168.122.228 */
-			    3232266851, /* 192.168.122.99 */
-			    3232266841, /* 192.168.122.89 */
-			    3232235522, /* 192.168.0.2 */
-			    3232235523, /* 192.168.0.3 */
-			    2610666242, /* 155.155.155.2 */
-			    2610666243, /* 155.155.155.3 */
-			    0, };
-
-static bool tcp_check_cache_reqsk(struct request_sock *req)
+bool tcp_cache_reqsk(struct request_sock *req, struct tcp_chm_tuple *tct)
 {
-	/* Here you decide whether to cache request_sock. */
-
-	/* TODO - implement the caching policy */
-
-	/* tmep version */
-	__be32 sip = req_to_sk(req)->sk_daddr;
-	int i;
-
-	for (i = 0; i < 15; i++) {
-		if ((unsigned int)ntohl(sip) == targets[i])
-			return true;
-	}
-
-	return false;
-}
-
-bool tcp_cache_reqsk(struct request_sock *req)
-{
-	struct tcp_sock_hashinfo *hashinfo;
+	/* struct tcp_sock_hashinfo *hashinfo; */
 	struct dst_entry *dst = req->dst_cache;
 	int cpu = smp_processor_id();
 	int ret;
+	/* unsigned long irq_flag; */
 
-	hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
+	/* hashinfo = &per_cpu(tcp_sk_hashinfo, cpu); */
 
-	if (tcp_check_cache_reqsk(req)) {
-		rsk_set_flag(req, RSK_INUSE);
-		rsk_set_flag(req, RSK_CACHED);
-		wmb();
+	rsk_set_flag(req, RSK_INUSE);
+	rsk_set_flag(req, RSK_CACHED);
+	wmb();
 
-		preempt_disable();
-		ret = tcp_rsk_insert_bucket(hashinfo, req);
-		preempt_enable();
+	/* preempt_disable(); */
+	/* local_irq_save(irq_flag); */
+	ret = tcp_rsk_insert_bucket(tct, req);
+	/* preempt_enable(); */
+	/* local_irq_restore(irq_flag); */
 
-		if (ret < 0)
-			goto error;
+	if (ret < 0)
+		goto error;
 
-		atomic_inc_not_zero(&dst->__refcnt);
-		return true;
-	}
+	atomic_inc_not_zero(&dst->__refcnt);
+	/* pr_info("cache request_sock(%d:%d) on #%d cpu\n", req_to_sk(req)->sk_rcv_saddr, req_to_sk(req)->sk_daddr, cpu); */
+	return true;
 
 error:
 	return false;
+}
+
+/*
+ * If req is not NULL, chm_tuple is found using req.
+ * In the other case, chm_tuple is found using dip, sip, dport.
+ */
+struct tcp_chm_tuple *lookup_tcp_chm_tuple_req(struct request_sock *req)
+{
+	return lookup_tcp_chm_tuple(req_to_sk(req)->sk_daddr,
+					req_to_sk(req)->sk_rcv_saddr,
+					inet_rsk(req)->ir_num);
+}
+struct tcp_chm_tuple *lookup_tcp_chm_tuple( const __be32 dip,
+		const __be32 sip, const __be16 dport)
+
+{
+	unsigned int hash = tcp_sock_hashfn(dip, sip, dport);
+	unsigned int hash_mask = TCP_CHM_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	int cpu = smp_processor_id();
+	struct tcp_connection_histroy_map *chm = &per_cpu(tcp_chm, cpu);
+	/* struct tcp_connection_histroy_map_bucket *bucket = &tcp_chm.hash[slot]; */
+	struct tcp_connection_histroy_map_bucket *bucket = &chm->hash[slot];
+	struct tcp_chm_tuple *cur;
+
+	/* lookup hash chain */
+	hlist_for_each_entry(cur, &bucket->head, list) {
+		if (TCP_CHM_TUPLE_MATCH(cur, dip, sip, dport)) {
+			goto found;
+		}
+	}
+out:
+	cur = NULL;
+found:
+	return cur;
+}
+
+static inline void tcp_chm_expire_update(struct tcp_chm_tuple *tct)
+{
+	tct->expires = jiffies + TCP_CHM_EXPIRE;
+}
+
+struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req)
+{
+	unsigned int hash = tcp_sock_hashfn(req_to_sk(req)->sk_daddr,
+					    req_to_sk(req)->sk_rcv_saddr,
+					    inet_rsk(req)->ir_num);
+	unsigned int hash_mask = TCP_CHM_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	int cpu = smp_processor_id();
+	struct tcp_connection_histroy_map *chm = &per_cpu(tcp_chm, cpu);
+	/* struct tcp_connection_histroy_map_bucket *bucket = &tcp_chm.hash[slot]; */
+	struct tcp_connection_histroy_map_bucket *bucket = &chm->hash[slot];
+	struct tcp_chm_tuple *new;
+	unsigned long irq_flag;
+
+	new = kmem_cache_alloc(tcp_chm_cache, GFP_ATOMIC);
+	if (!new)
+		panic("tcp connection history map alloc fail\n");
+
+	new->count = 0;
+	new->dip = req_to_sk(req)->sk_daddr;
+	new->sip = req_to_sk(req)->sk_rcv_saddr;
+	new->dport = inet_rsk(req)->ir_num;
+	new->flags = 0;
+	tcp_chm_expire_update(new);
+	INIT_HLIST_NODE(&new->list);
+
+	profile_cycle_timer_start(INSERT_FCONN, smp_processor_id());
+	local_irq_save(irq_flag);
+	hlist_add_head(&new->list, &bucket->head);
+	local_irq_restore(irq_flag);
+	profile_tcp_count_inc(INSERT_FCONN, INSERT_FCONN, smp_processor_id());
+
+	bucket->count++;
+	INIT_HLIST_HEAD(&new->reqsk_bucket.head);
+	chm->num_entry++;
+
+	return new;
+}
+
+void tcp_record_reqsk_chm(struct request_sock *req)
+{
+	struct tcp_chm_tuple *tct;
+	unsigned long time = jiffies;
+	tct = lookup_tcp_chm_tuple_req(req);
+	if (likely(tct)) {
+		if (time_after(time, tct->expires)) {
+			/* update expire time and reset counter */
+			tct->count >>= ((time - tct->expires) / TCP_CHM_EXPIRE + 1);
+			tcp_chm_expire_update(tct);
+			/* pr_info("expire(%d) tcp_chm_tuple(%d:%d) on #%d cpu\n", tct->count, req_to_sk(req)->sk_rcv_saddr, req_to_sk(req)->sk_daddr, smp_processor_id()); */
+			if (tct->count <= 0) { /* no more caching */
+				goto free_chm;
+			}
+		}
+
+		tct->count++;
+
+		if (tct->count > TCP_CHM_OVER_COUNT &&
+				!(rsk_flag(req, RSK_CACHED))) {
+			tcp_cache_reqsk(req, tct);
+			tct->flags |= TCP_CHM_CACHED;
+		}
+	} else {
+		tct = init_tcp_chm_tuple(req);
+		if(!tct)
+			pr_err("fail: init_tcp_chm_tuple");
+		/* pr_info("init tcp_chm_tuple(%d:%d) on #%d cpu\n", req_to_sk(req)->sk_rcv_saddr, req_to_sk(req)->sk_daddr, smp_processor_id()); */
+		tct->count++;
+	}
+
+out:
+	return;
+
+free_chm:
+	/* kmem_cache_free(tcp_chm_cache, tct); */
+	/* pr_info("free_chm tcp_chm_tuple(%d:%d) on #%d cpu\n", req_to_sk(req)->sk_rcv_saddr, req_to_sk(req)->sk_daddr, smp_processor_id()); */
+	tct->count++;
+	goto out;
 }
 
 extern struct tcp_congestion_ops tcp_reno;
@@ -4026,6 +4248,7 @@ void __init tcp_init(void)
 	int max_rshare, max_wshare, cnt;
 	unsigned long limit;
 	unsigned int i;
+	cycles_t temp;
 	int cpu;
 
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) >
@@ -4078,14 +4301,31 @@ void __init tcp_init(void)
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
 
-	for_each_online_cpu(cpu) {
-		struct tcp_sock_hashinfo *hashinfo;
+	pr_info("tcp_chm version: 1");
 
-		hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
-		for (i = 0; i < TCP_SOCK_HASH_SIZE; i++)
-			INIT_HLIST_HEAD(&hashinfo->shash[i].head);
+	for_each_online_cpu(cpu) {
+		struct tcp_connection_histroy_map *chm;
+
+		chm = &per_cpu(tcp_chm, cpu);
+		chm->num_entry = 0;
+		for (i = 0; i < TCP_CHM_SIZE; i++) {
+			chm->hash[i].count = 0;
+			INIT_HLIST_HEAD(&chm->hash[i].head);
+		}
 	}
 
+	tcp_chm_cache = kmem_cache_create("tcp_chm_cachep",
+					sizeof(struct tcp_chm_tuple), 0,
+					SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+
+	profile_tcp_counter_init();
+
+	temp = get_cycles();
+	profile_cycle_timer_start(REQSK_SLAB, smp_processor_id());
+	pr_info("start timer: %d", get_cycles() - temp);
+	temp = get_cycles();
+	profile_tcp_count_inc(REQSK_SLAB, REQSK_SLAB, smp_processor_id());
+	pr_info("finish timer: %d", get_cycles() - temp);
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;

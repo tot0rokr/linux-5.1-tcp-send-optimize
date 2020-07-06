@@ -3208,7 +3208,9 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 	struct tcphdr *th;
 	int mss;
 
+	profile_cycle_timer_start(SYNACK_SLAB, smp_processor_id());
 	skb = alloc_skb(MAX_TCP_HEADER, GFP_ATOMIC);
+	/* profile_tcp_count_inc(SYNACK_SLAB, SYNACK_SLAB, smp_processor_id()); */
 	if (unlikely(!skb)) {
 		dst_release(dst);
 		return NULL;
@@ -3295,6 +3297,7 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 		atomic_set(&shinfo->dataref, 2);
 		reqsk_put(req);
 	}
+	profile_tcp_count_inc(SYNACK_SLAB, SYNACK_INIT, smp_processor_id());
 
 	return skb;
 }

@@ -48,6 +48,66 @@
 #include <linux/memcontrol.h>
 #include <linux/bpf-cgroup.h>
 
+#ifndef _PROFILE_COUNT_
+#define _PROFILE_COUNT_
+
+enum tcp_counting_e {
+	ALL_CONN = 0,	// 0
+	REQSK_SLAB,		// 1
+	REQSK_ALLOC_INIT,	// 2
+	SEND_SYNACK,	// 3
+	SYNACK_SLAB,	// 4
+	FAST_PATH,		// 5
+	INSERT_FCONN,	// 6
+	INSERT_OBJ,		// 7
+	SYNACK_INIT,	// 8
+	FAST_SYNACK,	// 9
+	FAST_REQSK,		// 10
+	LOOKUP_FAIL,	// 11
+	MANAGING,		// 12
+	LOOKUP,		// 12
+	RCV_SYN,		// 12
+	RCV_ACK,		// 12
+	RCV_EST,		// 12
+      TCP_COUNT_NR
+};
+/*
+ * 
+ * enum cycle_timer_point_e {
+ *       ALL_CONN = 0,	// 0
+ *       REQSK_SLAB,		// 1
+ *       REQSK_ALLOC_INIT,	// 2
+ *       SEND_SYNACK,	// 3
+ *       SYNACK_SLAB,	// 4
+ *       FAST_PATH,		// 5
+ *       INSERT_FCONN,	// 6
+ *       INSERT_OBJ,		// 7
+ *       SYNACK_INIT,	// 8
+ *       FAST_SYNACK,	// 9
+ *       FAST_REQSK,		// 10
+ *       LOOKUP_FAIL,	// 11
+ *       CTP_NR
+ * }
+ */
+
+
+DECLARE_PER_CPU(unsigned long [TCP_COUNT_NR][2], profile_tcp_counting);
+DECLARE_PER_CPU(unsigned long [TCP_COUNT_NR], profile_start_timer);
+extern struct timer_list watch_tcp_profile_counting;
+
+/* counter inc */
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e begin,
+							 enum tcp_counting_e fin, int cpu);
+
+inline unsigned long profile_cycle_timer_start(enum tcp_counting_e type, int cpu);
+
+/* timer initialization */
+void profile_tcp_counter_init(void);
+
+#endif
+
+
+
 extern struct inet_hashinfo tcp_hashinfo;
 
 extern struct percpu_counter tcp_orphan_count;
@@ -623,31 +683,56 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 		return pktsize;
 }
 
-/* Hash table for sock, request_sock */
-#define TCP_SOCK_HASH_SIZE 256
 
-#define TCP_RSK_MATCH(__rsk, __dip, __sip, __dport) 	\
-	((req_to_sk(__rsk)->sk_rcv_saddr == (__dip)) &&	\
-	(req_to_sk(__rsk)->sk_daddr == (__sip))      &&	\
-	(inet_rsk(__rsk)->ir_num == (__dport)))
+#define TCP_CHM_EXPIRE msecs_to_jiffies(10000)	/* 10s */
+#define TCP_CHM_SIZE 1024
+#define TCP_CHM_OVER_COUNT 1
+#define TCP_CHM_CACHED 0x1
 
-/* If you need lock for bucket list, Add it and should init at boot time */
-struct tcp_reqsk_hashbucket {
+#define TCP_CHM_TUPLE_MATCH(__tuple, __dip, __sip, __dport)	\
+	(((__dip) == (__tuple->dip)) &&	\
+	((__sip) == (__tuple->sip))      &&	\
+	((__dport) == (__tuple->dport)))
+
+struct tcp_connection_histroy_map_bucket {
+	unsigned long count;
+	struct hlist_head head;
+};
+
+struct tcp_reqsk_bucket {
 	unsigned int		count;
+	// unsigned long		flag;
 	struct hlist_head	head;
 };
 
-struct tcp_sock_hashinfo {
-	unsigned int num_entry;
-	struct tcp_reqsk_hashbucket shash[TCP_SOCK_HASH_SIZE];
+
+struct tcp_chm_tuple {
+	__be32			sip;
+	__be32			dip;
+	__u16			dport;
+	__u16			flags;
+	unsigned long		count;
+	unsigned long		expires;
+	struct hlist_node		list;
+	struct tcp_reqsk_bucket		reqsk_bucket;
+};
+
+/* We don't need lock */
+struct tcp_connection_histroy_map {
+	unsigned long num_entry;
+	struct tcp_connection_histroy_map_bucket hash[TCP_CHM_SIZE];
 };
 
 /* tcp.c */
 void tcp_get_info(struct sock *, struct tcp_info *);
-struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
-		struct dst_entry **dst, const __be32 dip, const __be32 sip,
-		const __be16 dport);
-bool tcp_cache_reqsk(struct request_sock *req);
+struct request_sock *tcp_rsk_lookup(struct dst_entry **dst,
+		const __be32 dip, const __be32 sip, const __be16 dport);
+bool tcp_cache_reqsk(struct request_sock *req, struct tcp_chm_tuple *tct);
+struct tcp_chm_tuple *lookup_tcp_chm_tuple_req(struct request_sock *req);
+struct tcp_chm_tuple *lookup_tcp_chm_tuple( const __be32 dip,
+		const __be32 sip, const __be16 dport);
+struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req);
+void tcp_record_reqsk_chm(struct request_sock *req);
 
 /* Read 'sendfile()'-style from a TCP socket */
 int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,

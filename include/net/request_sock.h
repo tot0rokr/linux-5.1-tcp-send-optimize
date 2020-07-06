@@ -78,27 +78,28 @@ struct request_sock {
 enum rsk_cache_flag {
 	RSK_CACHED,
 	RSK_INUSE,
+	RSK_ACCESS,
 };
 
-static inline bool rsk_test_and_set_flag(struct request_sock *rsk,
+static __always_inline bool rsk_test_and_set_flag(struct request_sock *rsk,
 					 enum rsk_cache_flag flag)
 {
 	return test_and_set_bit(flag, &rsk->cache_flag);
 }
 
-static inline void rsk_set_flag(struct request_sock *rsk,
+static __always_inline void rsk_set_flag(struct request_sock *rsk,
 				enum rsk_cache_flag flag)
 {
 	__set_bit(flag, &rsk->cache_flag);
 }
 
-static inline void rsk_reset_flag(struct request_sock *rsk,
+static __always_inline void rsk_reset_flag(struct request_sock *rsk,
 				  enum rsk_cache_flag flag)
 {
 	__clear_bit(flag, &rsk->cache_flag);
 }
 
-static inline bool rsk_flag(const struct request_sock *rsk,
+static __always_inline bool rsk_flag(const struct request_sock *rsk,
 			    enum rsk_cache_flag flag)
 {
 	return test_bit(flag, &rsk->cache_flag);
@@ -149,7 +150,9 @@ static inline void reqsk_free(struct request_sock *req)
 
 	if (rsk_flag(req, RSK_CACHED)) {
 		rsk_reset_flag(req, RSK_INUSE);
-		refcount_set(&req->rsk_refcnt, 1);
+		// refcount_set(&req->rsk_refcnt, 1);
+		if (req->rsk_listener)
+			sock_put(req->rsk_listener);
 		return;
 	}
 
@@ -163,11 +166,6 @@ static inline void reqsk_free(struct request_sock *req)
 static inline void reqsk_put(struct request_sock *req)
 {
 	if (refcount_dec_and_test(&req->rsk_refcnt)) {
-		if (rsk_flag(req, RSK_CACHED)) {
-			rsk_reset_flag(req, RSK_INUSE);
-			refcount_set(&req->rsk_refcnt, 1);
-			return;
-		}
 
 		reqsk_free(req);
 	}
