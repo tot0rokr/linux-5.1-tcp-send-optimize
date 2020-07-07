@@ -6428,11 +6428,13 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	th = (const struct tcphdr *)skb->data;
 
 	/* Find request_sock in hash table */
-	if ((req = tcp_rsk_lookup(&per_cpu(tcp_sk_hashinfo, cpu), &dst,
+	if ((req = tcp_rsk_lookup(&per_cpu(tcp_sk_hashinfo, get_cpu()), &dst,
 				  iph->daddr, iph->saddr, th->dest))) {
+		put_cpu();
 		tcp_fastset_reqsk(sk, req, dst, skb, af_ops);
 		goto done;
 	}
+	put_cpu();
 
 	req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);
 
