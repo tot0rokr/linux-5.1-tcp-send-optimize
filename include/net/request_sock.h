@@ -81,12 +81,6 @@ enum rsk_cache_flag {
 	RSK_ACCESS,
 };
 
-static __always_inline bool rsk_test_and_reset_flag(struct request_sock *rsk,
-					 enum rsk_cache_flag flag)
-{
-	return test_and_clear_bit(flag, &rsk->cache_flag);
-}
-
 static __always_inline bool rsk_test_and_set_flag(struct request_sock *rsk,
 					 enum rsk_cache_flag flag)
 {
@@ -155,10 +149,8 @@ static inline void reqsk_free(struct request_sock *req)
 	WARN_ON_ONCE(refcount_read(&req->rsk_refcnt) != 0);
 
 	if (rsk_flag(req, RSK_CACHED)) {
-		// rsk_set_flag(req, RSK_ACCESS);
 		rsk_reset_flag(req, RSK_INUSE);
 		refcount_set(&req->rsk_refcnt, 1);
-		// rsk_reset_flag(req, RSK_ACCESS);
 		return;
 	}
 
@@ -173,10 +165,8 @@ static inline void reqsk_put(struct request_sock *req)
 {
 	if (refcount_dec_and_test(&req->rsk_refcnt)) {
 		if (rsk_flag(req, RSK_CACHED)) {
-			// rsk_set_flag(req, RSK_ACCESS);
 			rsk_reset_flag(req, RSK_INUSE);
 			refcount_set(&req->rsk_refcnt, 1);
-			// rsk_reset_flag(req, RSK_ACCESS);
 			return;
 		}
 

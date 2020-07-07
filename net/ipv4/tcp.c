@@ -3886,7 +3886,6 @@ struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 	unsigned int slot = hash & hash_mask;
 	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
 	__u16 port = ntohs(dport);
-	int count = 0;
 
 	struct request_sock *res = NULL;
 	/* unsigned long irq_flag; */
@@ -3899,23 +3898,18 @@ struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 	/* preempt_disable(); */
 	/* local_irq_save(irq_flag); */
 	hlist_for_each_entry(cur, &head->head, cached_list) {
-		count++;
 		if (TCP_RSK_MATCH(cur, dip, sip, port)
-			&& !rsk_flag(cur, RSK_INUSE)) {
-			/* && !rsk_test_and_set_flag(cur, RSK_ACCESS)) { */
+			&& !rsk_flag(cur, RSK_INUSE)
+			&& !rsk_test_and_set_flag(cur, RSK_ACCESS)) {
 			rsk_set_flag(cur, RSK_INUSE);
 			if (!(*dst = cur->dst_cache)) {
 				pr_err("tcp_sock error: can't find dst in sock\n");
 				rsk_reset_flag(cur, RSK_INUSE);
-				/* rsk_reset_flag(cur, RSK_ACCESS); */
+				rsk_reset_flag(cur, RSK_ACCESS);
 				break;
 			}
 			res = cur;
-			/* if (unlikely(!rsk_test_and_reset_flag(cur, RSK_ACCESS))) { */
-				/* pr_info("(%2d)overlap access reqsk: %d", smp_processor_id(), count); */
-				/* rsk_reset_flag(cur, RSK_INUSE); */
-				/* continue; */
-			/* } */
+			rsk_reset_flag(cur, RSK_ACCESS);
 			break;
 		}
 	}
@@ -3991,6 +3985,7 @@ bool tcp_cache_reqsk(struct request_sock *req)
 	int ret;
 	/* unsigned long irq_flag; */
 
+	hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
 
 	if (tcp_check_cache_reqsk(req)) {
 		rsk_set_flag(req, RSK_INUSE);
@@ -3999,9 +3994,7 @@ bool tcp_cache_reqsk(struct request_sock *req)
 
 		/* preempt_disable(); */
 		/* local_irq_save(irq_flag); */
-		hashinfo = &per_cpu(tcp_sk_hashinfo, get_cpu());
 		ret = tcp_rsk_insert_bucket(hashinfo, req);
-		put_cpu();
 		/* preempt_enable(); */
 		/* local_irq_restore(irq_flag); */
 
