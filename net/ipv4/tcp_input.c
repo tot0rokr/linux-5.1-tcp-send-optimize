@@ -6517,7 +6517,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	}
 
 	/* cache request_sock in here */
-	/* if (tcp_cache_reqsk(req)); */
+	if (tcp_cache_reqsk(req));
 		/* pr_info("cache request_sock on #%d cpu\n", cpu); */
 
 	if (fastopen_sk) {
