@@ -368,6 +368,9 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	sk_node_init(&req_to_sk(req)->sk_node);
 	req->num_timeout = 0;
 	req->num_retrans = 0;
+	refcount_inc(&sk->sk_refcnt);
+	req->rsk_listener = sk;
+	refcount_set(&req->rsk_refcnt, 0);
 
 	/* inet_reqsk_alloc */
 	ireq->ireq_state = TCP_NEW_SYN_RECV;

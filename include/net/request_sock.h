@@ -150,7 +150,9 @@ static inline void reqsk_free(struct request_sock *req)
 
 	if (rsk_flag(req, RSK_CACHED)) {
 		rsk_reset_flag(req, RSK_INUSE);
-		refcount_set(&req->rsk_refcnt, 1);
+		// refcount_set(&req->rsk_refcnt, 1);
+		if (req->rsk_listener)
+			sock_put(req->rsk_listener);
 		return;
 	}
 
@@ -164,11 +166,6 @@ static inline void reqsk_free(struct request_sock *req)
 static inline void reqsk_put(struct request_sock *req)
 {
 	if (refcount_dec_and_test(&req->rsk_refcnt)) {
-		if (rsk_flag(req, RSK_CACHED)) {
-			rsk_reset_flag(req, RSK_INUSE);
-			refcount_set(&req->rsk_refcnt, 1);
-			return;
-		}
 
 		reqsk_free(req);
 	}
