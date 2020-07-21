@@ -673,12 +673,46 @@ struct tcp_sock_hashinfo {
 	struct tcp_reqsk_hashbucket shash[TCP_SOCK_HASH_SIZE];
 };
 
+#define TCP_CHM_EXPIRE msecs_to_jiffies(10000)	/* 10s */
+#define TCP_CHM_SIZE 1024
+#define TCP_CHM_OVER_COUNT 3
+#define TCP_CHM_CACHED 0x1
+
+#define TCP_CONN_MATCH(__rsk, __tuple)	\
+	((req_to_sk(__rsk)->sk_rcv_saddr == (__tuple->sip)) &&	\
+	(req_to_sk(__rsk)->sk_daddr == (__tuple->dip))      &&	\
+	(inet_rsk(__rsk)->ir_num == (__tuple->dport)))
+
+struct tcp_connection_histroy_map_bucket {
+	unsigned long count;
+	struct hlist_head head;
+};
+
+struct tcp_chm_tuple {
+	__be32			sip;
+	__be32			dip;
+	__u16			dport;
+	__u16			flags;
+	unsigned long		count;
+	unsigned long		expires;
+	struct hlist_node		list;
+};
+
+/* We don't need lock */
+struct tcp_connection_histroy_map {
+	unsigned long num_entry;
+	struct tcp_connection_histroy_map_bucket hash[TCP_CHM_SIZE];
+};
+
 /* tcp.c */
 void tcp_get_info(struct sock *, struct tcp_info *);
 struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
 		struct dst_entry **dst, const __be32 dip, const __be32 sip,
 		const __be16 dport);
 bool tcp_cache_reqsk(struct request_sock *req);
+struct tcp_chm_tuple *lookup_tcp_chm_tuple(struct request_sock *req);
+struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req);
+void tcp_record_reqsk_chm(struct request_sock *req);
 
 /* Read 'sendfile()'-style from a TCP socket */
 int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,

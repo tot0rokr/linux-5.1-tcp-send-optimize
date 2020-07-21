@@ -6516,9 +6516,13 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
 	}
 
-	/* cache request_sock in here */
-	if (tcp_cache_reqsk(req));
-		/* pr_info("cache request_sock on #%d cpu\n", cpu); */
+	/*
+	 * [> cache request_sock in here <]
+	 * if (tcp_cache_reqsk(req));
+	 *       [> pr_info("cache request_sock on #%d cpu\n", cpu); <]
+	 */
+	/* Record connection information into connection history map */
+	tcp_record_reqsk_chm(req);
 
 	if (fastopen_sk) {
 		af_ops->send_synack(fastopen_sk, dst, &fl, req,

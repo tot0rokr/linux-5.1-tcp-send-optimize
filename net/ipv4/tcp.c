@@ -319,6 +319,9 @@ struct tcp_splice_state {
  */
 /* Does it need to be initialized?? for hlist_head?? */
 DEFINE_PER_CPU(struct tcp_sock_hashinfo, tcp_sk_hashinfo);
+DEFINE_PER_CPU(struct tcp_connection_histroy_map, tcp_chm);
+/* static struct tcp_connection_histroy_map tcp_chm; */
+static struct kmem_cache *tcp_chm_cache;
 
 /*
  * Pressure flag: try to collapse.
@@ -3943,40 +3946,6 @@ static int tcp_rsk_insert_bucket(struct tcp_sock_hashinfo *hashinfo,
 	return 0;
 }
 
-unsigned int targets[17] = {2744689325, /* 163.152.162.173 */
-                      1010580482,
-			    1010580483,
-			    3232266753, /* 192.168.122.1 */
-			    2744689327, /* 163.152.162.175 */
-			    2744652863, /* 163.152.20.63 */
-			    2744652865, /* 163.152.20.65 */
-			    3232266980, /* 192.168.122.228 */
-			    3232266851, /* 192.168.122.99 */
-			    3232266841, /* 192.168.122.89 */
-			    3232235522, /* 192.168.0.2 */
-			    3232235523, /* 192.168.0.3 */
-			    2610666242, /* 155.155.155.2 */
-			    2610666243, /* 155.155.155.3 */
-			    0, };
-
-static bool tcp_check_cache_reqsk(struct request_sock *req)
-{
-	/* Here you decide whether to cache request_sock. */
-
-	/* TODO - implement the caching policy */
-
-	/* tmep version */
-	__be32 sip = req_to_sk(req)->sk_daddr;
-	int i;
-
-	for (i = 0; i < 15; i++) {
-		if ((unsigned int)ntohl(sip) == targets[i])
-			return true;
-	}
-
-	return false;
-}
-
 bool tcp_cache_reqsk(struct request_sock *req)
 {
 	struct tcp_sock_hashinfo *hashinfo;
@@ -3987,26 +3956,120 @@ bool tcp_cache_reqsk(struct request_sock *req)
 
 	hashinfo = &per_cpu(tcp_sk_hashinfo, cpu);
 
-	if (tcp_check_cache_reqsk(req)) {
-		rsk_set_flag(req, RSK_INUSE);
-		rsk_set_flag(req, RSK_CACHED);
-		wmb();
+	rsk_set_flag(req, RSK_INUSE);
+	rsk_set_flag(req, RSK_CACHED);
+	wmb();
 
-		/* preempt_disable(); */
-		/* local_irq_save(irq_flag); */
-		ret = tcp_rsk_insert_bucket(hashinfo, req);
-		/* preempt_enable(); */
-		/* local_irq_restore(irq_flag); */
+	/* preempt_disable(); */
+	/* local_irq_save(irq_flag); */
+	ret = tcp_rsk_insert_bucket(hashinfo, req);
+	/* preempt_enable(); */
+	/* local_irq_restore(irq_flag); */
 
-		if (ret < 0)
-			goto error;
+	if (ret < 0)
+		goto error;
 
-		atomic_inc_not_zero(&dst->__refcnt);
-		return true;
-	}
+	atomic_inc_not_zero(&dst->__refcnt);
+	pr_info("cache request_sock on #%d cpu\n", cpu);
+	return true;
 
 error:
 	return false;
+}
+
+struct tcp_chm_tuple *lookup_tcp_chm_tuple(struct request_sock *req)
+{
+	unsigned int hash = tcp_sock_hashfn(req_to_sk(req)->sk_daddr,
+					    req_to_sk(req)->sk_rcv_saddr,
+					    inet_rsk(req)->ir_num);
+	unsigned int hash_mask = TCP_CHM_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	int cpu = smp_processor_id();
+	struct tcp_connection_histroy_map *chm = &per_cpu(tcp_chm, cpu);
+	/* struct tcp_connection_histroy_map_bucket *bucket = &tcp_chm.hash[slot]; */
+	struct tcp_connection_histroy_map_bucket *bucket = &chm->hash[slot];
+	struct tcp_chm_tuple *cur;
+
+	/* lookup hash chain */
+	hlist_for_each_entry(cur, &bucket->head, list) {
+		if (TCP_CONN_MATCH(req, cur)) {
+			goto found;
+		}
+	}
+out:
+	cur = NULL;
+found:
+	return cur;
+}
+
+static void tcp_chm_expire_update(struct tcp_chm_tuple *tct)
+{
+	tct->expires = jiffies + TCP_CHM_EXPIRE;
+}
+
+struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req)
+{
+	unsigned int hash = tcp_sock_hashfn(req_to_sk(req)->sk_daddr,
+					    req_to_sk(req)->sk_rcv_saddr,
+					    inet_rsk(req)->ir_num);
+	unsigned int hash_mask = TCP_CHM_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	int cpu = smp_processor_id();
+	struct tcp_connection_histroy_map *chm = &per_cpu(tcp_chm, cpu);
+	/* struct tcp_connection_histroy_map_bucket *bucket = &tcp_chm.hash[slot]; */
+	struct tcp_connection_histroy_map_bucket *bucket = &chm->hash[slot];
+	struct tcp_chm_tuple *new;
+
+	new = kmem_cache_alloc(tcp_chm_cache, GFP_ATOMIC);
+	if (!new)
+		panic("tcp connection history map alloc fail\n");
+
+	new->count = 0;
+	new->dip = req_to_sk(req)->sk_daddr;
+	new->sip = req_to_sk(req)->sk_rcv_saddr;
+	new->dport = inet_rsk(req)->ir_num;
+	new->flags = 0;
+	tcp_chm_expire_update(new);
+	INIT_HLIST_NODE(&new->list);
+	bucket->count++;
+	hlist_add_head(&new->list, &bucket->head);
+	chm->num_entry++;
+
+	return new;
+}
+
+void tcp_record_reqsk_chm(struct request_sock *req)
+{
+	struct tcp_chm_tuple *tct;
+	tct = lookup_tcp_chm_tuple(req);
+	if (likely(tct)) {
+		if (time_after(jiffies, tct->expires)) {
+			/* update expire time and reset counter */
+			tcp_chm_expire_update(tct);
+			tct->count /= 2;
+			if (tct->count <= 0) { /* no more caching */
+				goto free_chm;
+			}
+		}
+
+		tct->count++;
+
+		if (tct->count > TCP_CHM_OVER_COUNT &&
+				!(rsk_flag(req, RSK_CACHED))) {
+			tcp_cache_reqsk(req);
+			tct->flags |= TCP_CHM_CACHED;
+		}
+	} else {
+		tct = init_tcp_chm_tuple(req);
+		tct->count++;
+	}
+
+out:
+	return;
+
+free_chm:
+	kmem_cache_free(tcp_chm_cache, tct);
+	goto out;
 }
 
 extern struct tcp_congestion_ops tcp_reno;
@@ -4102,6 +4165,20 @@ void __init tcp_init(void)
 			INIT_HLIST_HEAD(&hashinfo->shash[i].head);
 	}
 
+	for_each_online_cpu(cpu) {
+		struct tcp_connection_histroy_map *chm;
+
+		chm = &per_cpu(tcp_chm, cpu);
+		chm->num_entry = 0;
+		for (i = 0; i < TCP_CHM_SIZE; i++) {
+			chm->hash[i].count = 0;
+			INIT_HLIST_HEAD(&chm->hash[i].head);
+		}
+	}
+
+	tcp_chm_cache = kmem_cache_create("tcp_chm_cachep",
+					sizeof(struct tcp_chm_tuple), 0,
+					SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;
