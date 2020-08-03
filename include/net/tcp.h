@@ -623,70 +623,28 @@ static inline int tcp_bound_to_half_wnd(struct tcp_sock *tp, int pktsize)
 		return pktsize;
 }
 
-/* Hash table for sock, request_sock */
-#define TCP_SOCK_HASH_SIZE 256
-
-#define TCP_RSK_MATCH(__rsk, __dip, __sip, __dport) 	\
-	((req_to_sk(__rsk)->sk_rcv_saddr == (__dip)) &&	\
-	(req_to_sk(__rsk)->sk_daddr == (__sip))      &&	\
-	(inet_rsk(__rsk)->ir_num == (__dport)))
-
-/* If you need lock for bucket list, Add it and should init at boot time */
-struct tcp_reqsk_hashbucket {
-	unsigned int		count;
-	// unsigned long		flag;
-	struct hlist_head	head;
-};
-
-/*
- * enum tcp_reqsk_hashbucket_flag {
- *       H_RSK_ACCESS,
- * }
- * 
- * static __always_inline bool h_rsk_test_and_set_flag(struct tcp_reqsk_hashbucket *h,
- *                                enum tcp_reqsk_hashbucket_flag flag)
- * {
- *       return test_and_set_bit(flag, &h->flag);
- * }
- * 
- * static __always_inline void h_rsk_set_flag(struct tcp_reqsk_hashbucket *h,
- *                                enum tcp_reqsk_hashbucket_flag flag)
- * {
- *       __set_bit(flag, &h->flag);
- * }
- * 
- * static __always_inline void h_rsk_reset_flag(struct tcp_reqsk_hashbucket *h,
- *                                enum tcp_reqsk_hashbucket_flag flag)
- * {
- *       __clear_bit(flag, &h->flag);
- * }
- * 
- * static __always_inline bool h_rsk_flag(struct tcp_reqsk_hashbucket *h,
- *                                enum tcp_reqsk_hashbucket_flag flag)
- * {
- *       return test_bit(flag, &h->flag);
- * }
- */
-
-struct tcp_sock_hashinfo {
-	unsigned int num_entry;
-	struct tcp_reqsk_hashbucket shash[TCP_SOCK_HASH_SIZE];
-};
 
 #define TCP_CHM_EXPIRE msecs_to_jiffies(10000)	/* 10s */
 #define TCP_CHM_SIZE 1024
-#define TCP_CHM_OVER_COUNT 3
+#define TCP_CHM_OVER_COUNT 1
 #define TCP_CHM_CACHED 0x1
 
-#define TCP_CONN_MATCH(__rsk, __tuple)	\
-	((req_to_sk(__rsk)->sk_rcv_saddr == (__tuple->sip)) &&	\
-	(req_to_sk(__rsk)->sk_daddr == (__tuple->dip))      &&	\
-	(inet_rsk(__rsk)->ir_num == (__tuple->dport)))
+#define TCP_CHM_TUPLE_MATCH(__tuple, __dip, __sip, __dport)	\
+	(((__dip) == (__tuple->dip)) &&	\
+	((__sip) == (__tuple->sip))      &&	\
+	((__dport) == (__tuple->dport)))
 
 struct tcp_connection_histroy_map_bucket {
 	unsigned long count;
 	struct hlist_head head;
 };
+
+struct tcp_reqsk_bucket {
+	unsigned int		count;
+	// unsigned long		flag;
+	struct hlist_head	head;
+};
+
 
 struct tcp_chm_tuple {
 	__be32			sip;
@@ -696,6 +654,7 @@ struct tcp_chm_tuple {
 	unsigned long		count;
 	unsigned long		expires;
 	struct hlist_node		list;
+	struct tcp_reqsk_bucket		reqsk_bucket;
 };
 
 /* We don't need lock */
@@ -706,11 +665,12 @@ struct tcp_connection_histroy_map {
 
 /* tcp.c */
 void tcp_get_info(struct sock *, struct tcp_info *);
-struct request_sock *tcp_rsk_lookup(struct tcp_sock_hashinfo *hashinfo,
-		struct dst_entry **dst, const __be32 dip, const __be32 sip,
-		const __be16 dport);
-bool tcp_cache_reqsk(struct request_sock *req);
-struct tcp_chm_tuple *lookup_tcp_chm_tuple(struct request_sock *req);
+struct request_sock *tcp_rsk_lookup(struct dst_entry **dst,
+		const __be32 dip, const __be32 sip, const __be16 dport);
+bool tcp_cache_reqsk(struct request_sock *req, struct tcp_chm_tuple *tct);
+struct tcp_chm_tuple *lookup_tcp_chm_tuple_req(struct request_sock *req);
+struct tcp_chm_tuple *lookup_tcp_chm_tuple( const __be32 dip,
+		const __be32 sip, const __be16 dport);
 struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req);
 void tcp_record_reqsk_chm(struct request_sock *req);
 

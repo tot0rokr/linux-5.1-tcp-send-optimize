@@ -131,8 +131,6 @@ void clean_acked_data_disable(struct inet_connection_sock *icsk)
 EXPORT_SYMBOL_GPL(clean_acked_data_disable);
 #endif
 
-extern struct tcp_sock_hashinfo tcp_sk_hashinfo;
-
 static void tcp_gro_dev_warn(struct sock *sk, const struct sk_buff *skb,
 			     unsigned int len)
 {
@@ -6405,7 +6403,6 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	struct flowi fl;
 	const struct iphdr *iph;
 	const struct tcphdr *th;
-	int cpu = smp_processor_id();
 
 	/* TW buckets are converted to open requests without
 	 * limitations, they conserve resources and peer is
@@ -6428,9 +6425,9 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	th = (const struct tcphdr *)skb->data;
 
 	/* Find request_sock in hash table */
-	if ((req = tcp_rsk_lookup(&per_cpu(tcp_sk_hashinfo, cpu), &dst,
-				  iph->daddr, iph->saddr, th->dest))) {
+	if ((req = tcp_rsk_lookup(&dst, iph->saddr, iph->daddr, th->dest))) {
 		tcp_fastset_reqsk(sk, req, dst, skb, af_ops);
+		tcp_record_reqsk_chm(req);
 		goto done;
 	}
 

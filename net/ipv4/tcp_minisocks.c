@@ -362,7 +362,6 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	struct tcp_fastopen_cookie foc = { .len = -1 };
 	struct tcp_options_received tmp_opt;
 	struct sock *fastopen_sk = NULL;
-	struct net *net = sock_net(sk);
 
 	/* reqsk_alloc */
 	sk_node_init(&req_to_sk(req)->sk_node);
