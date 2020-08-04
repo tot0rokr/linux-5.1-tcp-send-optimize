@@ -4038,15 +4038,83 @@ struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req)
 	return new;
 }
 
+static void tcp_uncache_synack(struct tcp_chm_tuple *tct, unsigned long nr)
+{
+	struct tcp_sock_hashinfo *hashinfo = &per_cpu(tcp_sk_hashinfo, smp_processor_id());
+	const __be32 dip = tct->sip;
+	const __be32 sip = tct->dip;
+	const __be16 dport = tct->dport;
+	struct request_sock *cur;
+	__u16 port = htons(dport);
+	unsigned int hash = tcp_sock_hashfn(dip, sip, port);
+	unsigned int hash_mask = TCP_SOCK_HASH_SIZE - 1;
+	unsigned int slot = hash & hash_mask;
+	struct tcp_reqsk_hashbucket *head = &hashinfo->shash[slot];
+	unsigned long count = 0;
+
+	/* unsigned long irq_flag; */
+
+	/* There is no cached request_sock */
+	if (unlikely(hlist_empty(&head->head)))
+		return;
+
+	if (head->count < nr)
+		return;
+
+	/* now iterate the bucket list */
+	/* preempt_disable(); */
+	/* local_irq_save(irq_flag); */
+	hlist_for_each_entry(cur, &head->head, cached_list) {
+		if (TCP_RSK_MATCH(cur, dip, sip, dport)
+			&& ++count >= nr
+			&& !rsk_flag(cur, RSK_INUSE)
+			&& !rsk_test_and_set_flag(cur, RSK_ACCESS)) {
+			struct sk_buff *skb = cur->synack;
+			struct request_sock *req = NULL;
+			if (skb) {
+				struct skb_shared_info *shinfo = skb_shinfo(skb);
+				int temp;
+				cur->synack = NULL;
+				temp =	(skb->cloned ?
+						(skb->nohdr ? (1 << SKB_DATAREF_SHIFT) + 1 : 1)
+						: 0);
+				/* shinfo->dataref is 0 if skb->cloned is not NULL */
+				if (atomic_dec_return(&shinfo->dataref) != temp && temp){
+					pr_info("tcp_uncache_synack: sh_info(ref:%d/temp:%d) doesn't remove",
+							atomic_read(&shinfo->dataref), temp);
+				}
+				if (refcount_read(&skb->users) != 1) {
+					pr_info("tcp_uncache_synack: skb(ref:%d) doesn't remove",
+							refcount_read(&skb->users));
+				}
+				consume_skb(skb);
+				pr_info("tcp_uncache_synack: consume synack (%ld / %ld)", count, nr);
+			} else {
+				pr_info("tcp_uncache_synack: uncached synack (%ld / %ld)", count, nr);
+			}
+			req = hlist_entry(*cur->cached_list.pprev, struct request_sock, cached_list);
+			wmb();
+			reqsk_uncache(cur);
+			head->count--;
+			cur = req;
+			pr_info("tcp_uncache_synack: consume requst sock (%ld / %ld / %d)", count, nr, head->count);
+		}
+	}
+	return;
+}
+
 void tcp_record_reqsk_chm(struct request_sock *req)
 {
 	struct tcp_chm_tuple *tct;
+	unsigned long time = jiffies;
 	tct = lookup_tcp_chm_tuple(req);
 	if (likely(tct)) {
-		if (time_after(jiffies, tct->expires)) {
+		if (time_after(time, tct->expires)) {
 			/* update expire time and reset counter */
+			tct->count >>= ((time - tct->expires) / TCP_CHM_EXPIRE + 1);
 			tcp_chm_expire_update(tct);
-			tct->count /= 2;
+			pr_info("expire: consume synack (%ld) on #%d cpu\n", tct->count, smp_processor_id());
+			tcp_uncache_synack(tct, tct->count);
 			if (tct->count <= 0) { /* no more caching */
 				goto free_chm;
 			}
@@ -4068,7 +4136,6 @@ out:
 	return;
 
 free_chm:
-	kmem_cache_free(tcp_chm_cache, tct);
 	goto out;
 }
 

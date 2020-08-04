@@ -978,8 +978,10 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 		tcp_options_write((__be32 *)(th + 1), NULL, &opts);
 
 		/* Do something not to release synack packet */
-		refcount_set(&skb->users, 2);
-		atomic_set(&shinfo->dataref, 2);
+		/* refcount_set(&skb->users, 2); */
+		if(!refcount_inc_not_zero(&skb->users)) {
+			pr_info("fastset: synack refcount is 0");
+		}
 	}
 
 	if (skb) {

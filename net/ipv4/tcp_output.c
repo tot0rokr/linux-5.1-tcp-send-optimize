@@ -3291,8 +3291,14 @@ struct sk_buff *tcp_make_synack(const struct sock *sk, struct dst_entry *dst,
 
 		req->synack = skb;
 		req->mss_cache = mss;
-		refcount_set(&skb->users, 2);
-		atomic_set(&shinfo->dataref, 2);
+		/* refcount_set(&skb->users, 2); */
+		if(!refcount_inc_not_zero(&skb->users)) {
+			pr_info("fastset: synack refcount is 0");
+		}
+		/* atomic_set(&shinfo->dataref, 2); */
+		if(!atomic_inc_not_zero(&shinfo->dataref)) {
+			pr_info("fastset: shinfo refcount is 0");
+		}
 		reqsk_put(req);
 	}
 

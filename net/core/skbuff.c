@@ -551,13 +551,6 @@ static void skb_free_head(struct sk_buff *skb)
 {
 	unsigned char *head = skb->head;
 
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
-
 	if (skb->head_frag)
 		skb_free_frag(head);
 	else
@@ -568,13 +561,6 @@ static void skb_release_data(struct sk_buff *skb)
 {
 	struct skb_shared_info *shinfo = skb_shinfo(skb);
 	int i;
-
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
 
 	if (skb->cloned &&
 	    atomic_sub_return(skb->nohdr ? (1 << SKB_DATAREF_SHIFT) + 1 : 1,
@@ -597,13 +583,6 @@ static void skb_release_data(struct sk_buff *skb)
 static void kfree_skbmem(struct sk_buff *skb)
 {
 	struct sk_buff_fclones *fclones;
-
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
 
 	switch (skb->fclone) {
 	case SKB_FCLONE_UNAVAILABLE:
@@ -633,13 +612,6 @@ fastpath:
 
 void skb_release_head_state(struct sk_buff *skb)
 {
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
-
 	skb_dst_drop(skb);
 	if (skb->destructor) {
 		WARN_ON(in_irq());
@@ -654,13 +626,6 @@ void skb_release_head_state(struct sk_buff *skb)
 /* Free everything but the sk_buff shell. */
 static void skb_release_all(struct sk_buff *skb)
 {
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
-
 	skb_release_head_state(skb);
 	if (likely(skb->head))
 		skb_release_data(skb);
@@ -677,13 +642,6 @@ static void skb_release_all(struct sk_buff *skb)
 
 void __kfree_skb(struct sk_buff *skb)
 {
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
-
 	skb_release_all(skb);
 	kfree_skbmem(skb);
 }
@@ -777,13 +735,6 @@ void __kfree_skb_flush(void)
 static inline void _kfree_skb_defer(struct sk_buff *skb)
 {
 	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
-
-	if (skb->sk) {
-		struct request_sock *req = inet_reqsk(skb->sk);
-
-		if (req->synack == skb)
-			return;
-	}
 
 	/* drop skb->head and call any destructors for packet */
 	skb_release_all(skb);

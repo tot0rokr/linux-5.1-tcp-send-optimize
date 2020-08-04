@@ -6431,6 +6431,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 	if ((req = tcp_rsk_lookup(&per_cpu(tcp_sk_hashinfo, cpu), &dst,
 				  iph->daddr, iph->saddr, th->dest))) {
 		tcp_fastset_reqsk(sk, req, dst, skb, af_ops);
+		tcp_record_reqsk_chm(req);
 		goto done;
 	}
 

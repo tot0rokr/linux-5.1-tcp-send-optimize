@@ -673,7 +673,7 @@ struct tcp_sock_hashinfo {
 	struct tcp_reqsk_hashbucket shash[TCP_SOCK_HASH_SIZE];
 };
 
-#define TCP_CHM_EXPIRE msecs_to_jiffies(10000)	/* 10s */
+#define TCP_CHM_EXPIRE msecs_to_jiffies(2500)	/* 10s */
 #define TCP_CHM_SIZE 1024
 #define TCP_CHM_OVER_COUNT 3
 #define TCP_CHM_CACHED 0x1

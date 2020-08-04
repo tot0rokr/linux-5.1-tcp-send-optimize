@@ -151,8 +151,10 @@ static inline void reqsk_free(struct request_sock *req)
 	if (rsk_flag(req, RSK_CACHED)) {
 		rsk_reset_flag(req, RSK_INUSE);
 		// refcount_set(&req->rsk_refcnt, 1);
-		if (req->rsk_listener)
+		if (req->rsk_listener) {
 			sock_put(req->rsk_listener);
+			req->rsk_listener = NULL;
+		}
 		return;
 	}
 
@@ -169,6 +171,22 @@ static inline void reqsk_put(struct request_sock *req)
 
 		reqsk_free(req);
 	}
+}
+
+static inline void reqsk_uncache(struct request_sock *req)
+{
+	unsigned long irq_flag;
+	WARN_ON_ONCE(refcount_read(&req->rsk_refcnt) != 0);
+
+	local_irq_save(irq_flag);
+	hlist_del(&req->cached_list);
+	local_irq_restore(irq_flag);
+
+	dst_release(req->dst_cache);
+	rsk_reset_flag(req, RSK_CACHED);
+	reqsk_free(req);
+
+	pr_info("reqsk_uncache: finish");
 }
 
 /*
