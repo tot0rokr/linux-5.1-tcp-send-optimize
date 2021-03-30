@@ -284,6 +284,116 @@
 #include <asm/ioctls.h>
 #include <net/busy_poll.h>
 
+
+
+
+DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR][2], profile_tcp_counting);
+DEFINE_PER_CPU(unsigned long [TCP_COUNT_NR], profile_start_timer);
+struct timer_list watch_tcp_profile_counting;
+
+/* counter inc */
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e begin,
+							 enum tcp_counting_e fin, int cpu)
+{
+	cycles_t start = get_cycles();
+      unsigned long *start_timer = &per_cpu(profile_start_timer[begin], cpu);
+      unsigned long (*counter)[2] = &per_cpu(profile_tcp_counting[fin], cpu);
+	(*counter)[1]++;
+      return (*counter)[0] += start - *start_timer;
+}
+
+inline unsigned long profile_cycle_timer_start(enum tcp_counting_e type, int cpu)
+{
+      unsigned long *start_timer = &per_cpu(profile_start_timer[type], cpu);
+	cycles_t start = get_cycles();
+
+      return *start_timer = start;
+}
+
+/* timer handler */
+static void watch_lookup_count_fn(struct timer_list *t)
+{
+      int cpu;
+/*
+ *       unsigned long sum[TCP_COUNT_NR] = {0};
+ *       char sum_str[500] = "";
+ *       int i;
+ * 
+ *       printk("            SEND      , ITERATION , FIRST_SKB , ALLOC_SKB , "
+ *                   "IN_HEAD   , IN_FRAG   , NEW_ONE   , NEW_MANY  , MERGE     , "
+ *                   "FRAGMENT  , OVERFLOW  ");
+ *       for_each_online_cpu(cpu) {
+ *             char str[500] = "";
+ *             for (i = 0; i < TCP_COUNT_NR; i++) {
+ *                   unsigned long count = per_cpu(tcp_profile_counting[i], cpu);
+ *                   sprintf(str, "%s, %-10ld", str, count);
+ *                   sum[i] += count;
+ *             }
+ *             printk("core(%2d): %s", cpu, str);
+ *       }
+ */
+	/*
+       * for (i = 0; i < TCP_COUNT_NR; i++) {
+       *       sprintf(sum_str, "%s, %-10ld", sum_str, sum[i]);
+       * }
+	 */
+	/*
+       * printk("total   : %s\n", sum_str);
+	 */
+	int i;
+	/*
+	 * unsigned long val[TCP_COUNT_NR] = {0};
+	 */
+	for_each_online_cpu(cpu) {
+		char str[500] = "";
+		char str2[1000] = "";
+		char str3[1000] = "";
+		for (i = 0; i < TCP_COUNT_NR; i++) {
+			unsigned long val = 0;
+			unsigned long total = per_cpu(profile_tcp_counting[i][0], cpu);
+			unsigned long count = per_cpu(profile_tcp_counting[i][1], cpu);
+			if (count > 0) {
+				val = total / count;
+			}
+			sprintf(str, "%s,%-8ld", str, val);
+			sprintf(str2, "%s,%-8ld", str2, total);
+			sprintf(str3, "%s,%-8ld", str3, count);
+		}
+		printk("average_cycles: %s", str);
+		printk("cycles        : %s", str2);
+		printk("counts        : %s", str3);
+		break;
+	}
+      mod_timer(t, jiffies + msecs_to_jiffies(5000));
+}
+
+/* timer initialization */
+void profile_tcp_counter_init(void)
+{
+      int cpu;
+      printk("profile counter init");
+
+      for_each_online_cpu(cpu) {
+            int i;
+            for (i = 0; i < TCP_COUNT_NR; i++) {
+                  unsigned long (*count)[2] = &per_cpu(profile_tcp_counting[i], cpu);
+                  (*count)[0] = 0;
+                  (*count)[1] = 0;
+            }
+            for (i = 0; i < TCP_COUNT_NR; i++) {
+                  unsigned long *count = &per_cpu(profile_start_timer[i], cpu);
+                  *count = 0;
+            }
+      }
+
+      timer_setup(&watch_tcp_profile_counting, watch_lookup_count_fn, 0);
+      watch_tcp_profile_counting.expires = jiffies + msecs_to_jiffies(10000);
+      add_timer(&watch_tcp_profile_counting);
+      printk("profile timer  init");
+}
+
+
+
 struct percpu_counter tcp_orphan_count;
 EXPORT_SYMBOL_GPL(tcp_orphan_count);
 
@@ -3942,9 +4052,11 @@ static int tcp_rsk_insert_bucket(struct tcp_chm_tuple *tct,
 	unsigned long irq_flag;
 
 	/* preempt_disable(); */
+	profile_cycle_timer_start(INSERT_OBJ, smp_processor_id());
 	local_irq_save(irq_flag);
 	hlist_add_head(&req->cached_list, &head->head);
 	local_irq_restore(irq_flag);
+	profile_tcp_count_inc(INSERT_OBJ, INSERT_OBJ, smp_processor_id());
 	/* preempt_enable(); */
 	head->count++;
 	/* hashinfo->num_entry++; */
@@ -4048,9 +4160,13 @@ struct tcp_chm_tuple *init_tcp_chm_tuple(struct request_sock *req)
 	new->flags = 0;
 	tcp_chm_expire_update(new);
 	INIT_HLIST_NODE(&new->list);
+
+	profile_cycle_timer_start(INSERT_FCONN, smp_processor_id());
 	local_irq_save(irq_flag);
 	hlist_add_head(&new->list, &bucket->head);
 	local_irq_restore(irq_flag);
+	profile_tcp_count_inc(INSERT_FCONN, INSERT_FCONN, smp_processor_id());
+
 	bucket->count++;
 	INIT_HLIST_HEAD(&new->reqsk_bucket.head);
 	chm->num_entry++;
@@ -4132,6 +4248,7 @@ void __init tcp_init(void)
 	int max_rshare, max_wshare, cnt;
 	unsigned long limit;
 	unsigned int i;
+	cycles_t temp;
 	int cpu;
 
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) >
@@ -4200,6 +4317,15 @@ void __init tcp_init(void)
 	tcp_chm_cache = kmem_cache_create("tcp_chm_cachep",
 					sizeof(struct tcp_chm_tuple), 0,
 					SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+
+	profile_tcp_counter_init();
+
+	temp = get_cycles();
+	profile_cycle_timer_start(REQSK_SLAB, smp_processor_id());
+	pr_info("start timer: %d", get_cycles() - temp);
+	temp = get_cycles();
+	profile_tcp_count_inc(REQSK_SLAB, REQSK_SLAB, smp_processor_id());
+	pr_info("finish timer: %d", get_cycles() - temp);
 
 	cnt = tcp_hashinfo.ehash_mask + 1;
 	sysctl_tcp_max_orphans = cnt / 2;

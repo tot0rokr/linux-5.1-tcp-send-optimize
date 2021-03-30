@@ -48,6 +48,66 @@
 #include <linux/memcontrol.h>
 #include <linux/bpf-cgroup.h>
 
+#ifndef _PROFILE_COUNT_
+#define _PROFILE_COUNT_
+
+enum tcp_counting_e {
+	ALL_CONN = 0,	// 0
+	REQSK_SLAB,		// 1
+	REQSK_ALLOC_INIT,	// 2
+	SEND_SYNACK,	// 3
+	SYNACK_SLAB,	// 4
+	FAST_PATH,		// 5
+	INSERT_FCONN,	// 6
+	INSERT_OBJ,		// 7
+	SYNACK_INIT,	// 8
+	FAST_SYNACK,	// 9
+	FAST_REQSK,		// 10
+	LOOKUP_FAIL,	// 11
+	MANAGING,		// 12
+	LOOKUP,		// 12
+	RCV_SYN,		// 12
+	RCV_ACK,		// 12
+	RCV_EST,		// 12
+      TCP_COUNT_NR
+};
+/*
+ * 
+ * enum cycle_timer_point_e {
+ *       ALL_CONN = 0,	// 0
+ *       REQSK_SLAB,		// 1
+ *       REQSK_ALLOC_INIT,	// 2
+ *       SEND_SYNACK,	// 3
+ *       SYNACK_SLAB,	// 4
+ *       FAST_PATH,		// 5
+ *       INSERT_FCONN,	// 6
+ *       INSERT_OBJ,		// 7
+ *       SYNACK_INIT,	// 8
+ *       FAST_SYNACK,	// 9
+ *       FAST_REQSK,		// 10
+ *       LOOKUP_FAIL,	// 11
+ *       CTP_NR
+ * }
+ */
+
+
+DECLARE_PER_CPU(unsigned long [TCP_COUNT_NR][2], profile_tcp_counting);
+DECLARE_PER_CPU(unsigned long [TCP_COUNT_NR], profile_start_timer);
+extern struct timer_list watch_tcp_profile_counting;
+
+/* counter inc */
+inline unsigned long profile_tcp_count_inc(enum tcp_counting_e begin,
+							 enum tcp_counting_e fin, int cpu);
+
+inline unsigned long profile_cycle_timer_start(enum tcp_counting_e type, int cpu);
+
+/* timer initialization */
+void profile_tcp_counter_init(void);
+
+#endif
+
+
+
 extern struct inet_hashinfo tcp_hashinfo;
 
 extern struct percpu_counter tcp_orphan_count;

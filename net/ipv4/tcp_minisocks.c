@@ -363,6 +363,8 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	struct tcp_options_received tmp_opt;
 	struct sock *fastopen_sk = NULL;
 
+	profile_cycle_timer_start(FAST_REQSK, smp_processor_id());
+
 	/* reqsk_alloc */
 	sk_node_init(&req_to_sk(req)->sk_node);
 	req->num_timeout = 0;
@@ -413,6 +415,8 @@ void tcp_fastset_reqsk(struct sock *sk, struct request_sock *req,
 	/* check fastopen without considering syn cookies */
 	/* tcp_reqsk_record_syn in tcp_input.c */
 	fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
+
+	profile_tcp_count_inc(FAST_REQSK, FAST_REQSK, smp_processor_id());
 
 	/* final stage */
 	if (fastopen_sk) {

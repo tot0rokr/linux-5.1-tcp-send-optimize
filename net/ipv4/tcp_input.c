@@ -6015,6 +6015,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 			if (!acceptable)
 				return 1;
 			consume_skb(skb);
+			profile_tcp_count_inc(RCV_SYN, RCV_SYN, smp_processor_id());
 			return 0;
 		}
 		goto discard;
@@ -6221,6 +6222,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 	case TCP_ESTABLISHED:
 		tcp_data_queue(sk, skb);
 		queued = 1;
+		profile_tcp_count_inc(RCV_SYN, RCV_EST, smp_processor_id());
 		break;
 	}
 
@@ -6420,16 +6422,25 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		goto drop;
 	}
 
+
 	/* Check IP address and port number of skb for request_sock cache */
 	iph = ip_hdr(skb);
 	th = (const struct tcphdr *)skb->data;
 
+	profile_cycle_timer_start(ALL_CONN, smp_processor_id());
 	/* Find request_sock in hash table */
 	if ((req = tcp_rsk_lookup(&dst, iph->saddr, iph->daddr, th->dest))) {
+		profile_tcp_count_inc(ALL_CONN, LOOKUP, smp_processor_id());
 		tcp_fastset_reqsk(sk, req, dst, skb, af_ops);
+		profile_cycle_timer_start(MANAGING, smp_processor_id());
 		tcp_record_reqsk_chm(req);
+		profile_tcp_count_inc(ALL_CONN, FAST_PATH, smp_processor_id());
+		profile_tcp_count_inc(MANAGING, MANAGING, smp_processor_id());
 		goto done;
 	}
+
+	profile_tcp_count_inc(ALL_CONN, LOOKUP_FAIL, smp_processor_id());
+	profile_cycle_timer_start(REQSK_ALLOC_INIT, smp_processor_id());
 
 	req = inet_reqsk_alloc(rsk_ops, sk, !want_cookie);
 
@@ -6513,6 +6524,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 		fastopen_sk = tcp_try_fastopen(sk, skb, req, &foc, dst);
 	}
 
+	profile_tcp_count_inc(REQSK_ALLOC_INIT, REQSK_ALLOC_INIT, smp_processor_id());
 	/*
 	 * [> cache request_sock in here <]
 	 * if (tcp_cache_reqsk(req));
@@ -6548,6 +6560,7 @@ int tcp_conn_request(struct request_sock_ops *rsk_ops,
 			return 0;
 		}
 	}
+	profile_tcp_count_inc(ALL_CONN, ALL_CONN, smp_processor_id());
 done:
 	reqsk_put(req);
 	return 0;
